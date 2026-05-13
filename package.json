@@ -1,0 +1,30 @@
+{
+  "name": "k100s",
+  "version": "0.1.0",
+  "description": "A Kubernetes desktop browser for clusters, namespaces, and pods.",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k -n vite,electron -c cyan,green \"bun run dev:vite\" \"bun run electron:dev\"",
+    "dev:vite": "vite --host 127.0.0.1",
+    "electron:dev": "wait-on tcp:5173 && ELECTRON_START_URL=http://127.0.0.1:5173 electron .",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@headlessui/react": "^2.2.10",
+    "@tailwindcss/vite": "^4.1.7",
+    "@vitejs/plugin-react": "^4.4.1",
+    "concurrently": "^9.1.2",
+    "electron": "^36.2.0",
+    "lucide-react": "^0.511.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-virtuoso": "^4.18.7",
+    "tailwindcss": "^4.1.7",
+    "vite": "^6.3.5",
+    "wait-on": "^8.0.3"
+  },
+  "devDependencies": {}
+}
