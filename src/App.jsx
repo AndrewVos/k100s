@@ -1,8 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from "@headlessui/react";
+import {
+  Dialog,
+  DialogBackdrop,
+  DialogPanel,
+  DialogTitle,
+  Tab,
+  TabGroup,
+  TabList,
+  TabPanel,
+  TabPanels
+} from "@headlessui/react";
+import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter";
+import jsonLanguage from "react-syntax-highlighter/dist/esm/languages/prism/json";
+import yamlLanguage from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
+import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { Virtuoso } from "react-virtuoso";
-import { Boxes, RefreshCw, Server, TerminalSquare, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Boxes, LoaderCircle, Server, TerminalSquare, X } from "lucide-react";
 import "./styles.css";
+
+SyntaxHighlighter.registerLanguage("json", jsonLanguage);
+SyntaxHighlighter.registerLanguage("yaml", yamlLanguage);
 
 const api = window.k100s ?? {
   async getContexts() {
@@ -13,6 +30,9 @@ const api = window.k100s ?? {
   },
   async getPods() {
     return [];
+  },
+  async describePod() {
+    return "";
   },
   async startPodLogs() {},
   async stopPodLogs() {},
@@ -26,6 +46,8 @@ const api = window.k100s ?? {
     return () => {};
   }
 };
+const SELECTED_CONTEXT_KEY = "k100s.selectedContext";
+const SELECTED_NAMESPACE_KEY = "k100s.selectedNamespace";
 
 function formatAge(creationTimestamp) {
   if (!creationTimestamp) return "Unknown";
@@ -43,11 +65,20 @@ function formatAge(creationTimestamp) {
 
 function statusTone(status, detail) {
   const value = `${status} ${detail}`.toLowerCase();
-  if (value.includes("running") || value.includes("ready") || value.includes("succeeded")) {
+  if (value.includes("ready")) {
     return "bg-emerald-50 text-emerald-700 ring-emerald-200";
+  }
+  if (value.includes("running")) {
+    return "bg-yellow-50 text-yellow-700 ring-yellow-200";
   }
   if (value.includes("pending") || value.includes("waiting") || value.includes("containercreating")) {
     return "bg-amber-50 text-amber-700 ring-amber-200";
+  }
+  if (value.includes("succeeded") || value.includes("completed")) {
+    return "bg-sky-50 text-sky-700 ring-sky-200";
+  }
+  if (value.includes("unknown")) {
+    return "bg-slate-100 text-slate-700 ring-slate-200";
   }
   return "bg-rose-50 text-rose-700 ring-rose-200";
 }
@@ -111,6 +142,33 @@ function EmptyState({ title, message }) {
   );
 }
 
+function LoadingState() {
+  return (
+    <div className="grid min-h-80 place-items-center border-t border-slate-200 bg-white px-6 text-center">
+      <LoaderCircle className="size-9 animate-spin text-sky-600" aria-hidden="true" />
+    </div>
+  );
+}
+
+function SortButton({ active, direction, children, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex h-full w-full cursor-pointer items-center gap-1 px-4 py-3 text-left text-xs font-semibold uppercase text-slate-500 hover:text-slate-950"
+    >
+      {children}
+      {active ? (
+        direction === "asc" ? (
+          <ArrowUp className="size-3.5" aria-hidden="true" />
+        ) : (
+          <ArrowDown className="size-3.5" aria-hidden="true" />
+        )
+      ) : null}
+    </button>
+  );
+}
+
 function parseLogLine(line) {
   const match = line.match(/^(\d{4}-\d{2}-\d{2}T\S+)\s?(.*)$/);
 
@@ -145,16 +203,94 @@ function HighlightedText({ text, filter }) {
   );
 }
 
+function formatJsonMessage(message) {
+  const value = String(message || "").trim();
+  if (!value || !["{", "["].includes(value[0])) return "";
+
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return "";
+  }
+}
+
+const syntaxStyle = {
+  ...oneLight,
+  'pre[class*="language-"]': {
+    ...oneLight['pre[class*="language-"]'],
+    background: "transparent",
+    margin: 0,
+    padding: 0
+  },
+  'code[class*="language-"]': {
+    ...oneLight['code[class*="language-"]'],
+    background: "transparent",
+    fontFamily: "inherit",
+    fontSize: "inherit",
+    lineHeight: "inherit",
+    textShadow: "none"
+  }
+};
+
+function LogMessage({ message, filter, wrap }) {
+  const jsonMessage = formatJsonMessage(message);
+
+  if (!jsonMessage) {
+    return (
+      <span>
+        <HighlightedText text={message} filter={filter} />
+      </span>
+    );
+  }
+
+  if (filter.trim()) {
+    return (
+      <span className={wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"}>
+        <HighlightedText text={jsonMessage} filter={filter} />
+      </span>
+    );
+  }
+
+  return (
+    <SyntaxHighlighter
+      language="json"
+      style={syntaxStyle}
+      customStyle={{
+        background: "transparent",
+        margin: 0,
+        padding: 0,
+        whiteSpace: wrap ? "pre-wrap" : "pre",
+        overflow: "visible"
+      }}
+      codeTagProps={{
+        style: {
+          background: "transparent",
+          fontFamily: "inherit",
+          fontSize: "inherit",
+          lineHeight: "inherit",
+          whiteSpace: wrap ? "pre-wrap" : "pre"
+        }
+      }}
+    >
+      {jsonMessage}
+    </SyntaxHighlighter>
+  );
+}
+
 function PodDetailsModal({ pod, context, namespace, nodeTone, onClose }) {
   const [logLines, setLogLines] = useState([]);
   const [logAutoScroll, setLogAutoScroll] = useState(true);
   const [showTimestamps, setShowTimestamps] = useState(true);
   const [wrapLogText, setWrapLogText] = useState(true);
   const [logFilter, setLogFilter] = useState("");
+  const [describeText, setDescribeText] = useState("");
+  const [describeLoading, setDescribeLoading] = useState(false);
+  const [describeError, setDescribeError] = useState("");
   const logLineIdRef = useRef(0);
   const logRemainderRef = useRef("");
   const logStreamIdRef = useRef("");
   const bottomStateTimerRef = useRef(null);
+  const describeRequestRef = useRef(0);
 
   function handleLogBottomStateChange(isAtBottom) {
     if (bottomStateTimerRef.current) {
@@ -240,6 +376,35 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, onClose }) {
     };
   }, [pod?.name, context, namespace]);
 
+  useEffect(() => {
+    const podName = pod?.name;
+    if (!podName || !context || !namespace) return undefined;
+
+    const requestId = describeRequestRef.current + 1;
+    describeRequestRef.current = requestId;
+    setDescribeText("");
+    setDescribeError("");
+    setDescribeLoading(true);
+
+    api.describePod(context, namespace, podName)
+      .then((output) => {
+        if (requestId !== describeRequestRef.current) return;
+        setDescribeText(output);
+      })
+      .catch((cause) => {
+        if (requestId !== describeRequestRef.current) return;
+        setDescribeError(cause.message || "Unable to describe pod.");
+      })
+      .finally(() => {
+        if (requestId !== describeRequestRef.current) return;
+        setDescribeLoading(false);
+      });
+
+    return () => {
+      describeRequestRef.current += 1;
+    };
+  }, [pod?.name, context, namespace]);
+
   return (
     <Dialog open={Boolean(pod)} onClose={onClose} className="relative z-50">
       <DialogBackdrop className="fixed inset-0 bg-slate-950/45" />
@@ -293,92 +458,151 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, onClose }) {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-2">
-            <div className="text-xs font-semibold uppercase text-slate-500">Logs</div>
-            <div className="flex flex-wrap items-center justify-end gap-3">
-              <label className="flex items-center gap-2 text-xs font-medium text-slate-700">
-                Filter
-                <input
-                  type="search"
-                  value={logFilter}
-                  onChange={(event) => setLogFilter(event.target.value)}
-                  className="h-8 w-56 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-sky-500 focus:ring-4 focus:ring-sky-100"
-                  placeholder="Text in logs"
-                />
-              </label>
-              <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={logAutoScroll}
-                  onChange={(event) => setLogAutoScroll(event.target.checked)}
-                  className="size-4 cursor-pointer rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-                />
-                Autoscroll
-              </label>
-              <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={showTimestamps}
-                  onChange={(event) => setShowTimestamps(event.target.checked)}
-                  className="size-4 cursor-pointer rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-                />
-                Show timestamps
-              </label>
-              <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={wrapLogText}
-                  onChange={(event) => setWrapLogText(event.target.checked)}
-                  className="size-4 cursor-pointer rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-                />
-                Wrap text
-              </label>
-            </div>
-          </div>
-
-          <div className={`min-h-0 flex-1 bg-white ${wrapLogText ? "" : "overflow-x-auto"}`}>
-            <Virtuoso
-              data={visibleLogLines}
-              followOutput={logAutoScroll ? "auto" : false}
-              atBottomThreshold={80}
-              atBottomStateChange={handleLogBottomStateChange}
-              itemContent={(_index, line) => (
-                <div
-                  className={`flex gap-3 px-4 py-0.5 font-mono text-xs leading-5 ${
-                    wrapLogText ? "whitespace-pre-wrap break-words" : "w-max whitespace-pre"
-                  } ${
-                    line.level === "error"
-                      ? "bg-rose-50 text-rose-700"
-                      : line.level === "meta"
-                        ? "text-slate-500"
-                        : "text-slate-800"
-                  }`}
+          <TabGroup className="flex min-h-0 flex-1 flex-col">
+            <TabList className="flex gap-1 border-b border-slate-200 bg-white px-4 pt-3">
+              {["Logs", "Describe"].map((label) => (
+                <Tab
+                  key={label}
+                  className={({ selected }) =>
+                    `cursor-pointer rounded-t-md border border-b-0 px-4 py-2 text-sm font-medium outline-none transition ${
+                      selected
+                        ? "border-slate-200 bg-slate-50 text-slate-950"
+                        : "border-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-950"
+                    }`
+                  }
                 >
-                  {showTimestamps && line.timestamp ? (
-                    <span className="shrink-0 text-slate-500">
-                      <HighlightedText text={line.timestamp} filter={logFilter} />
-                    </span>
-                  ) : null}
-                  <span>
-                    <HighlightedText text={line.message} filter={logFilter} />
-                  </span>
-                </div>
-              )}
-              components={{
-                EmptyPlaceholder: () => (
-                  <div className="grid h-full place-items-center px-4 text-sm text-slate-500">
-                    Waiting for log output...
+                  {label}
+                </Tab>
+              ))}
+            </TabList>
+            <TabPanels className="min-h-0 flex-1">
+              <TabPanel className="flex h-full min-h-0 flex-col">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-2">
+                  <div className="text-xs font-semibold uppercase text-slate-500">Logs</div>
+                  <div className="flex flex-wrap items-center justify-end gap-3">
+                    <label className="flex items-center gap-2 text-xs font-medium text-slate-700">
+                      Filter
+                      <input
+                        type="search"
+                        value={logFilter}
+                        onChange={(event) => setLogFilter(event.target.value)}
+                        className="h-8 w-56 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-sky-500 focus:ring-4 focus:ring-sky-100"
+                        placeholder="Text in logs"
+                      />
+                    </label>
+                    <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={logAutoScroll}
+                        onChange={(event) => setLogAutoScroll(event.target.checked)}
+                        className="size-4 cursor-pointer rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                      />
+                      Autoscroll
+                    </label>
+                    <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={showTimestamps}
+                        onChange={(event) => setShowTimestamps(event.target.checked)}
+                        className="size-4 cursor-pointer rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                      />
+                      Show timestamps
+                    </label>
+                    <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={wrapLogText}
+                        onChange={(event) => setWrapLogText(event.target.checked)}
+                        className="size-4 cursor-pointer rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                      />
+                      Wrap text
+                    </label>
                   </div>
-                ),
-                Footer: () =>
-                  logLines.length > 0 ? (
-                    <div className="px-4 py-3 text-center font-mono text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                      {logFilter ? `${visibleLogLines.length} matching lines` : "End of logs"}
+                </div>
+
+                <div className={`min-h-0 flex-1 bg-white ${wrapLogText ? "" : "overflow-x-auto"}`}>
+                  <Virtuoso
+                    data={visibleLogLines}
+                    followOutput={logAutoScroll ? "auto" : false}
+                    atBottomThreshold={80}
+                    atBottomStateChange={handleLogBottomStateChange}
+                    itemContent={(_index, line) => (
+                      <div
+                        className={`flex gap-3 px-4 py-0.5 font-mono text-xs leading-5 ${
+                          wrapLogText ? "whitespace-pre-wrap break-words" : "w-max whitespace-pre"
+                        } ${
+                          line.level === "error"
+                            ? "bg-rose-50 text-rose-700"
+                            : line.level === "meta"
+                              ? "text-slate-500"
+                              : "text-slate-800"
+                        }`}
+                      >
+                        {showTimestamps && line.timestamp ? (
+                          <span className="shrink-0 text-slate-500">
+                            <HighlightedText text={line.timestamp} filter={logFilter} />
+                          </span>
+                        ) : null}
+                        <LogMessage message={line.message} filter={logFilter} wrap={wrapLogText} />
+                      </div>
+                    )}
+                    components={{
+                      EmptyPlaceholder: () => (
+                        <div className="grid h-full place-items-center px-4 text-sm text-slate-500">
+                          Waiting for log output...
+                        </div>
+                      ),
+                      Footer: () =>
+                        logLines.length > 0 ? (
+                          <div className="px-4 py-3 text-center font-mono text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                            {logFilter ? `${visibleLogLines.length} matching lines` : "End of logs"}
+                          </div>
+                        ) : null
+                    }}
+                  />
+                </div>
+              </TabPanel>
+              <TabPanel className="h-full min-h-0 bg-white">
+                {describeLoading ? (
+                  <div className="grid h-full place-items-center">
+                    <LoaderCircle className="size-9 animate-spin text-sky-600" aria-hidden="true" />
+                  </div>
+                ) : describeError ? (
+                  <div className="grid h-full place-items-center px-6 text-center">
+                    <div>
+                      <h3 className="text-base font-semibold text-slate-950">Describe failed</h3>
+                      <p className="mt-1 max-w-2xl text-sm text-slate-600">{describeError}</p>
                     </div>
-                  ) : null
-              }}
-            />
-          </div>
+                  </div>
+                ) : (
+                  <div className="h-full overflow-auto p-4 font-mono text-xs leading-5 text-slate-800">
+                    <SyntaxHighlighter
+                      language="yaml"
+                      style={syntaxStyle}
+                      customStyle={{
+                        background: "transparent",
+                        margin: 0,
+                        padding: 0,
+                        whiteSpace: "pre-wrap",
+                        overflow: "visible"
+                      }}
+                      codeTagProps={{
+                        style: {
+                          background: "transparent",
+                          fontFamily: "inherit",
+                          fontSize: "inherit",
+                          lineHeight: "inherit",
+                          whiteSpace: "pre-wrap"
+                        }
+                      }}
+                    >
+                      {describeText}
+                    </SyntaxHighlighter>
+                  </div>
+                )}
+              </TabPanel>
+            </TabPanels>
+          </TabGroup>
         </DialogPanel>
       </div>
     </Dialog>
@@ -396,6 +620,8 @@ export default function App() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdated, setLastUpdated] = useState("");
   const [selectedPodName, setSelectedPodName] = useState("");
+  const [podSort, setPodSort] = useState({ key: "name", direction: "asc" });
+  const [podFilter, setPodFilter] = useState("");
   const podsRequestRef = useRef(0);
 
   const selectedContext = useMemo(
@@ -413,6 +639,50 @@ export default function App() {
     () => pods.find((pod) => pod.name === selectedPodName) ?? null,
     [pods, selectedPodName]
   );
+  const visiblePods = useMemo(() => {
+    const filter = podFilter.trim().toLowerCase();
+    if (!filter) return pods;
+
+    return pods.filter((pod) => {
+      const value = [
+        pod.name,
+        pod.status,
+        pod.detail,
+        pod.ready,
+        pod.restarts,
+        pod.node,
+        formatAge(pod.age)
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      return value.includes(filter);
+    });
+  }, [podFilter, pods]);
+  const sortedPods = useMemo(() => {
+    const direction = podSort.direction === "asc" ? 1 : -1;
+
+    return [...visiblePods].sort((left, right) => {
+      if (podSort.key === "restarts") {
+        return (left.restarts - right.restarts) * direction;
+      }
+
+      if (podSort.key === "age") {
+        return (new Date(left.age).getTime() - new Date(right.age).getTime()) * direction;
+      }
+
+      const leftValue = String(left[podSort.key] ?? "");
+      const rightValue = String(right[podSort.key] ?? "");
+      return leftValue.localeCompare(rightValue, undefined, { numeric: true }) * direction;
+    });
+  }, [podSort, visiblePods]);
+
+  function changePodSort(key) {
+    setPodSort((current) => ({
+      key,
+      direction: current.key === key && current.direction === "asc" ? "desc" : "asc"
+    }));
+  }
 
   async function loadContexts() {
     setError("");
@@ -420,8 +690,13 @@ export default function App() {
 
     try {
       const result = await api.getContexts();
+      const storedContext = window.localStorage.getItem(SELECTED_CONTEXT_KEY);
+      const nextContext = result.contexts.some((item) => item.name === storedContext)
+        ? storedContext
+        : result.current || result.contexts[0]?.name || "";
+
       setContexts(result.contexts);
-      setContext(result.current || result.contexts[0]?.name || "");
+      setContext(nextContext);
     } catch (cause) {
       setError(cause.message || "Unable to read kubectl contexts.");
     } finally {
@@ -440,9 +715,13 @@ export default function App() {
 
     try {
       const result = await api.getNamespaces(nextContext);
+      const storedNamespace = window.localStorage.getItem(`${SELECTED_NAMESPACE_KEY}.${nextContext}`);
+
       setNamespaces(result);
       setNamespace(
-        selectedContext?.namespace && result.includes(selectedContext.namespace)
+        storedNamespace && result.includes(storedNamespace)
+          ? storedNamespace
+          : selectedContext?.namespace && result.includes(selectedContext.namespace)
           ? selectedContext.namespace
           : result[0] || ""
       );
@@ -488,6 +767,16 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (context) window.localStorage.setItem(SELECTED_CONTEXT_KEY, context);
+  }, [context]);
+
+  useEffect(() => {
+    if (context && namespace) {
+      window.localStorage.setItem(`${SELECTED_NAMESPACE_KEY}.${context}`, namespace);
+    }
+  }, [context, namespace]);
+
+  useEffect(() => {
     loadNamespaces(context);
   }, [context]);
 
@@ -521,21 +810,11 @@ export default function App() {
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => loadPods()}
-            disabled={!context || !namespace || isBusy}
-            className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-medium text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
-            title="Refresh pods"
-          >
-            <RefreshCw className={`size-4 ${isBusy ? "animate-spin" : ""}`} aria-hidden="true" />
-            Refresh now
-          </button>
         </div>
       </header>
 
       <section className="mx-auto max-w-7xl px-6 py-5">
-        <div className="grid gap-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:grid-cols-[1fr_1fr_auto_auto] md:items-end">
+        <div className="grid gap-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:grid-cols-[1fr_1fr_1fr_auto_auto] md:items-end">
           <SelectField
             label="Cluster"
             value={context}
@@ -564,9 +843,20 @@ export default function App() {
             ))}
           </SelectField>
 
+          <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+            Filter
+            <input
+              type="search"
+              value={podFilter}
+              onChange={(event) => setPodFilter(event.target.value)}
+              className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-sky-500 focus:ring-4 focus:ring-sky-100"
+              placeholder="Filter pods"
+            />
+          </label>
+
           <div className="flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
             <Server className="size-4 text-slate-500" aria-hidden="true" />
-            {pods.length} pods
+            {sortedPods.length === pods.length ? `${pods.length} pods` : `${sortedPods.length}/${pods.length} pods`}
           </div>
 
           <label className="flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-700">
@@ -596,8 +886,10 @@ export default function App() {
 
           {!context ? (
             <EmptyState title="No cluster selected" message="Make sure kubectl is installed and has configured contexts." />
-          ) : !namespace ? (
-            <EmptyState title="No namespace selected" message="Choose a namespace to inspect its pods." />
+          ) : error ? (
+            <EmptyState title="Connection failed" message={error} />
+          ) : loading.namespaces || (loading.pods && pods.length === 0) ? (
+            <LoadingState />
           ) : pods.length === 0 && !loading.pods ? (
             <EmptyState title="No pods found" message="This namespace does not currently have any pods." />
           ) : (
@@ -605,16 +897,40 @@ export default function App() {
               <table className="min-w-full table-fixed text-left text-sm">
                 <thead className="bg-slate-50 text-xs uppercase text-slate-500">
                   <tr>
-                    <th className="w-2/5 px-4 py-3 font-semibold">Name</th>
-                    <th className="w-32 px-4 py-3 font-semibold">Status</th>
-                    <th className="w-24 px-4 py-3 font-semibold">Ready</th>
-                    <th className="w-24 px-4 py-3 font-semibold">Restarts</th>
-                    <th className="w-24 px-4 py-3 font-semibold">Age</th>
-                    <th className="w-1/4 px-4 py-3 font-semibold">Node</th>
+                    <th className="w-2/5 p-0 font-semibold">
+                      <SortButton active={podSort.key === "name"} direction={podSort.direction} onClick={() => changePodSort("name")}>
+                        Name
+                      </SortButton>
+                    </th>
+                    <th className="w-32 p-0 font-semibold">
+                      <SortButton active={podSort.key === "detail"} direction={podSort.direction} onClick={() => changePodSort("detail")}>
+                        Status
+                      </SortButton>
+                    </th>
+                    <th className="w-24 p-0 font-semibold">
+                      <SortButton active={podSort.key === "ready"} direction={podSort.direction} onClick={() => changePodSort("ready")}>
+                        Ready
+                      </SortButton>
+                    </th>
+                    <th className="w-24 p-0 font-semibold">
+                      <SortButton active={podSort.key === "restarts"} direction={podSort.direction} onClick={() => changePodSort("restarts")}>
+                        Restarts
+                      </SortButton>
+                    </th>
+                    <th className="w-24 p-0 font-semibold">
+                      <SortButton active={podSort.key === "age"} direction={podSort.direction} onClick={() => changePodSort("age")}>
+                        Age
+                      </SortButton>
+                    </th>
+                    <th className="w-1/4 p-0 font-semibold">
+                      <SortButton active={podSort.key === "node"} direction={podSort.direction} onClick={() => changePodSort("node")}>
+                        Node
+                      </SortButton>
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
-                  {pods.map((pod) => (
+                  {sortedPods.map((pod) => (
                     <tr
                       key={pod.name}
                       tabIndex={0}
@@ -658,6 +974,7 @@ export default function App() {
         nodeTone={selectedPod ? nodeToneByName.get(selectedPod.node) : undefined}
         onClose={() => setSelectedPodName("")}
       />
+
     </main>
   );
 }

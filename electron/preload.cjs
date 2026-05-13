@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld("k100s", {
   getContexts: () => ipcRenderer.invoke("kubectl:get-contexts"),
   getNamespaces: (context) => ipcRenderer.invoke("kubectl:get-namespaces", context),
   getPods: (context, namespace) => ipcRenderer.invoke("kubectl:get-pods", context, namespace),
+  describePod: (context, namespace, podName) =>
+    ipcRenderer.invoke("kubectl:describe-pod", context, namespace, podName),
   startPodLogs: (options) => ipcRenderer.invoke("kubectl:start-pod-logs", options),
   stopPodLogs: (id) => ipcRenderer.invoke("kubectl:stop-pod-logs", id),
   onPodLogsData: (callback) => {

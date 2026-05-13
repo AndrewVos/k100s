@@ -119,6 +119,21 @@ async function getPods(context, namespace) {
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
+async function describePod(context, namespace, podName) {
+  return runKubectl(
+    [
+      "--context",
+      context,
+      "-n",
+      namespace,
+      "describe",
+      "pod",
+      podName
+    ],
+    { timeout: 30000 }
+  );
+}
+
 function createJsonObjectStream(onObject, onError) {
   let buffer = "";
   let depth = 0;
@@ -318,6 +333,9 @@ function createWindow() {
 ipcMain.handle("kubectl:get-contexts", async () => getContexts());
 ipcMain.handle("kubectl:get-namespaces", async (_event, context) => getNamespaces(context));
 ipcMain.handle("kubectl:get-pods", async (_event, context, namespace) => getPods(context, namespace));
+ipcMain.handle("kubectl:describe-pod", async (_event, context, namespace, podName) =>
+  describePod(context, namespace, podName)
+);
 ipcMain.handle("kubectl:start-pods-watch", async (event, options) => {
   startPodsWatch(event.sender, options);
 });
