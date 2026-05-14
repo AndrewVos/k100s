@@ -2,11 +2,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::HashMap,
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read, Write},
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
+};
+use portable_pty::{
+    native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize,
 };
 use tauri::{AppHandle, Emitter, State};
 
@@ -18,6 +21,14 @@ const APP_ICON_PNG: &[u8] = include_bytes!("../icons/icon.png");
 struct AppState {
     kubectl_requests: Arc<Mutex<HashMap<String, Arc<Mutex<Child>>>>>,
     pod_log_streams: Arc<Mutex<HashMap<String, Arc<Mutex<Child>>>>>,
+    pod_shells: Arc<Mutex<HashMap<String, PodShellSession>>>,
+}
+
+#[derive(Clone)]
+struct PodShellSession {
+    master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    killer: Arc<Mutex<Box<dyn ChildKiller + Send + Sync>>>,
 }
 
 #[derive(Serialize)]
@@ -56,6 +67,17 @@ struct StartPodLogsOptions {
     pod_name: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StartPodShellOptions {
+    id: String,
+    context: String,
+    namespace: String,
+    pod_name: String,
+    cols: u16,
+    rows: u16,
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct LogDataPayload {
@@ -73,6 +95,28 @@ struct LogErrorPayload {
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct LogClosedPayload {
+    id: String,
+    code: Option<i32>,
+    signal: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ShellDataPayload {
+    id: String,
+    text: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ShellErrorPayload {
+    id: String,
+    message: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ShellClosedPayload {
     id: String,
     code: Option<i32>,
     signal: Option<String>,
@@ -641,6 +685,196 @@ fn stop_pod_logs(state: State<'_, AppState>, id: String) -> Result<(), String> {
     Ok(())
 }
 
+fn pty_size(cols: u16, rows: u16) -> PtySize {
+    PtySize {
+        rows: rows.max(1),
+        cols: cols.max(1),
+        pixel_width: 0,
+        pixel_height: 0,
+    }
+}
+
+fn stop_pod_shell_by_id(state: &AppState, id: &str) {
+    let session = state.pod_shells.lock().unwrap().remove(id);
+    if let Some(session) = session {
+        let _ = session.killer.lock().unwrap().kill();
+    }
+}
+
+#[tauri::command]
+fn start_pod_shell(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    options: StartPodShellOptions,
+) -> Result<(), String> {
+    let app_state = state.inner().clone();
+    stop_pod_shell_by_id(&app_state, &options.id);
+
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(pty_size(options.cols, options.rows))
+        .map_err(|cause| cause.to_string())?;
+    let master = pair.master;
+    let mut reader = master
+        .try_clone_reader()
+        .map_err(|cause| cause.to_string())?;
+    let writer = master.take_writer().map_err(|cause| cause.to_string())?;
+
+    let mut command = CommandBuilder::new("kubectl");
+    command.args([
+        "--context",
+        &options.context,
+        "-n",
+        &options.namespace,
+        "exec",
+        "-it",
+        &options.pod_name,
+        "--",
+        "env",
+        "TERM=xterm-256color",
+        "sh",
+    ]);
+
+    let mut child = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|cause| cause.to_string())?;
+    let killer = child.clone_killer();
+    let session = PodShellSession {
+        master: Arc::new(Mutex::new(master)),
+        writer: Arc::new(Mutex::new(writer)),
+        killer: Arc::new(Mutex::new(killer)),
+    };
+
+    app_state
+        .pod_shells
+        .lock()
+        .unwrap()
+        .insert(options.id.clone(), session);
+
+    let app_for_output = app.clone();
+    let output_id = options.id.clone();
+    thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(size) => {
+                    let _ = app_for_output.emit(
+                        "kubectl:pod-shell-data",
+                        ShellDataPayload {
+                            id: output_id.clone(),
+                            text: String::from_utf8_lossy(&buffer[..size]).to_string(),
+                        },
+                    );
+                }
+                Err(cause) => {
+                    let _ = app_for_output.emit(
+                        "kubectl:pod-shell-error",
+                        ShellErrorPayload {
+                            id: output_id.clone(),
+                            message: cause.to_string(),
+                        },
+                    );
+                    break;
+                }
+            }
+        }
+    });
+
+    let app_for_wait = app.clone();
+    let wait_state = app_state.clone();
+    let wait_id = options.id.clone();
+    thread::spawn(move || {
+        let result = child.wait();
+        wait_state.pod_shells.lock().unwrap().remove(&wait_id);
+
+        match result {
+            Ok(status) => {
+                let _ = app_for_wait.emit(
+                    "kubectl:pod-shell-closed",
+                    ShellClosedPayload {
+                        id: wait_id,
+                        code: Some(status.exit_code() as i32),
+                        signal: status.signal().map(ToString::to_string),
+                    },
+                );
+            }
+            Err(cause) => {
+                let _ = app_for_wait.emit(
+                    "kubectl:pod-shell-error",
+                    ShellErrorPayload {
+                        id: wait_id.clone(),
+                        message: cause.to_string(),
+                    },
+                );
+                let _ = app_for_wait.emit(
+                    "kubectl:pod-shell-closed",
+                    ShellClosedPayload {
+                        id: wait_id,
+                        code: None,
+                        signal: None,
+                    },
+                );
+            }
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+fn write_pod_shell(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
+    let session = {
+        let sessions = state.pod_shells.lock().unwrap();
+        sessions
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| "Shell session is not running.".to_string())?
+    };
+
+    let result = session
+        .writer
+        .lock()
+        .unwrap()
+        .write_all(data.as_bytes())
+        .map_err(|cause| cause.to_string());
+
+    result
+}
+
+#[tauri::command]
+fn resize_pod_shell(
+    state: State<'_, AppState>,
+    id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let session = {
+        let sessions = state.pod_shells.lock().unwrap();
+        sessions
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| "Shell session is not running.".to_string())?
+    };
+
+    let result = session
+        .master
+        .lock()
+        .unwrap()
+        .resize(pty_size(cols, rows))
+        .map_err(|cause| cause.to_string());
+
+    result
+}
+
+#[tauri::command]
+fn stop_pod_shell(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    stop_pod_shell_by_id(state.inner(), &id);
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 fn set_macos_app_icon() {
     use objc2::{AnyThread, MainThreadMarker};
@@ -681,7 +915,11 @@ pub fn run() {
             describe_deployment_for_pod,
             cancel_kubectl_request,
             start_pod_logs,
-            stop_pod_logs
+            stop_pod_logs,
+            start_pod_shell,
+            write_pod_shell,
+            resize_pod_shell,
+            stop_pod_shell
         ])
         .run(tauri::generate_context!())
         .expect("error while running k100s");

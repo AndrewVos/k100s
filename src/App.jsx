@@ -15,10 +15,13 @@ import jsonLanguage from "react-syntax-highlighter/dist/esm/languages/prism/json
 import yamlLanguage from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Virtuoso } from "react-virtuoso";
 import { ArrowDown, ArrowLeft, ArrowUp, Boxes, LoaderCircle, Server, Settings, TerminalSquare, X } from "lucide-react";
+import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
 
 SyntaxHighlighter.registerLanguage("json", jsonLanguage);
@@ -43,6 +46,10 @@ const fallbackApi = {
   async cancelKubectlRequest() {},
   async startPodLogs() {},
   async stopPodLogs() {},
+  async startPodShell() {},
+  async writePodShell() {},
+  async resizePodShell() {},
+  async stopPodShell() {},
   onPodLogsData() {
     return () => {};
   },
@@ -50,6 +57,15 @@ const fallbackApi = {
     return () => {};
   },
   onPodLogsClosed() {
+    return () => {};
+  },
+  onPodShellData() {
+    return () => {};
+  },
+  onPodShellError() {
+    return () => {};
+  },
+  onPodShellClosed() {
     return () => {};
   }
 };
@@ -63,6 +79,10 @@ const tauriApi = {
   cancelKubectlRequest: (id) => invoke("cancel_kubectl_request", { id }),
   startPodLogs: (options) => invoke("start_pod_logs", { options }),
   stopPodLogs: (id) => invoke("stop_pod_logs", { id }),
+  startPodShell: (options) => invoke("start_pod_shell", { options }),
+  writePodShell: (id, data) => invoke("write_pod_shell", { id, data }),
+  resizePodShell: (id, cols, rows) => invoke("resize_pod_shell", { id, cols, rows }),
+  stopPodShell: (id) => invoke("stop_pod_shell", { id }),
   onPodLogsData: (callback) => {
     const unlisten = listen("kubectl:pod-logs-data", (event) => callback(event.payload));
     return () => {
@@ -77,6 +97,24 @@ const tauriApi = {
   },
   onPodLogsClosed: (callback) => {
     const unlisten = listen("kubectl:pod-logs-closed", (event) => callback(event.payload));
+    return () => {
+      unlisten.then((dispose) => dispose());
+    };
+  },
+  onPodShellData: (callback) => {
+    const unlisten = listen("kubectl:pod-shell-data", (event) => callback(event.payload));
+    return () => {
+      unlisten.then((dispose) => dispose());
+    };
+  },
+  onPodShellError: (callback) => {
+    const unlisten = listen("kubectl:pod-shell-error", (event) => callback(event.payload));
+    return () => {
+      unlisten.then((dispose) => dispose());
+    };
+  },
+  onPodShellClosed: (callback) => {
+    const unlisten = listen("kubectl:pod-shell-closed", (event) => callback(event.payload));
     return () => {
       unlisten.then((dispose) => dispose());
     };
@@ -389,11 +427,13 @@ function LogMessage({ message, filter, wrap, syntaxStyle }) {
 }
 
 function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, onClose }) {
+  const detailTabs = ["Logs", "Pod", "Deployment", "Shell"];
   const [logLines, setLogLines] = useState([]);
   const [logAutoScroll, setLogAutoScroll] = useState(true);
   const [showTimestamps, setShowTimestamps] = useState(true);
   const [wrapLogText, setWrapLogText] = useState(true);
   const [logFilter, setLogFilter] = useState("");
+  const [selectedTabIndex, setSelectedTabIndex] = useState(0);
   const [describeText, setDescribeText] = useState("");
   const [describeLoading, setDescribeLoading] = useState(false);
   const [describeError, setDescribeError] = useState("");
@@ -411,6 +451,10 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
     () => createSyntaxStyle(effectiveTheme === "dark" ? oneDark : oneLight),
     [effectiveTheme]
   );
+
+  useEffect(() => {
+    setSelectedTabIndex(0);
+  }, [pod?.name]);
 
   function handleLogBottomStateChange(isAtBottom) {
     if (bottomStateTimerRef.current) {
@@ -629,9 +673,9 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
             </div>
           </div>
 
-          <TabGroup className="flex min-h-0 flex-1 flex-col">
+          <TabGroup selectedIndex={selectedTabIndex} onChange={setSelectedTabIndex} className="flex min-h-0 flex-1 flex-col">
             <TabList className="flex gap-1 border-b border-slate-200 bg-white px-4 pt-3 dark:border-slate-800 dark:bg-slate-950">
-              {["Logs", "Pod", "Deployment"].map((label) => (
+              {detailTabs.map((label) => (
                 <Tab
                   key={label}
                   className={({ selected }) =>
@@ -759,12 +803,191 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
                   syntaxStyle={syntaxStyle}
                 />
               </TabPanel>
+              <TabPanel className="h-full min-h-0 bg-white dark:bg-slate-950">
+                <ShellPanel
+                  pod={pod}
+                  context={context}
+                  namespace={namespace}
+                  effectiveTheme={effectiveTheme}
+                  active={selectedTabIndex === detailTabs.indexOf("Shell")}
+                />
+              </TabPanel>
             </TabPanels>
           </TabGroup>
         </DialogPanel>
       </div>
     </Dialog>
   );
+}
+
+function ShellPanel({ pod, context, namespace, effectiveTheme, active }) {
+  const containerRef = useRef(null);
+  const terminalRef = useRef(null);
+  const fitAddonRef = useRef(null);
+  const shellIdRef = useRef("");
+  const resizeFrameRef = useRef(0);
+  const [status, setStatus] = useState("Connecting...");
+
+  function fitShellToContainer() {
+    if (!terminalRef.current || !fitAddonRef.current) return;
+
+    try {
+      fitAddonRef.current.fit();
+      if (!shellIdRef.current) return;
+
+      const { cols, rows } = terminalRef.current;
+      api.resizePodShell(shellIdRef.current, cols, rows).catch(() => {});
+    } catch {
+      // The terminal can be temporarily zero-sized while the modal tab is settling.
+    }
+  }
+
+  useEffect(() => {
+    if (!containerRef.current) return undefined;
+
+    const terminal = new Terminal({
+      cursorBlink: true,
+      convertEol: true,
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+      fontSize: 13,
+      lineHeight: 1.35,
+      scrollback: 5000,
+      theme: terminalTheme(effectiveTheme)
+    });
+    const fitAddon = new FitAddon();
+    terminal.loadAddon(fitAddon);
+    terminal.open(containerRef.current);
+    terminalRef.current = terminal;
+    fitAddonRef.current = fitAddon;
+
+    const inputSubscription = terminal.onData((data) => {
+      if (!shellIdRef.current) return;
+      api.writePodShell(shellIdRef.current, data).catch((cause) => {
+        terminal.writeln(`\r\n${cause.message || "Unable to write to shell."}`);
+      });
+    });
+
+    const observer = new ResizeObserver(() => {
+      if (resizeFrameRef.current) window.cancelAnimationFrame(resizeFrameRef.current);
+      resizeFrameRef.current = window.requestAnimationFrame(fitShellToContainer);
+    });
+    observer.observe(containerRef.current);
+    window.requestAnimationFrame(fitShellToContainer);
+
+    return () => {
+      if (resizeFrameRef.current) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = 0;
+      }
+      observer.disconnect();
+      inputSubscription.dispose();
+      terminal.dispose();
+      terminalRef.current = null;
+      fitAddonRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!terminalRef.current) return;
+    terminalRef.current.options.theme = terminalTheme(effectiveTheme);
+  }, [effectiveTheme]);
+
+  useEffect(() => {
+    if (!active || !terminalRef.current) return;
+
+    window.requestAnimationFrame(() => {
+      fitShellToContainer();
+      terminalRef.current?.focus();
+    });
+  }, [active]);
+
+  useEffect(() => {
+    const podName = pod?.name;
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!podName || !context || !namespace || !terminal || !fitAddon) return undefined;
+
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    shellIdRef.current = id;
+    setStatus("Connecting...");
+    terminal.reset();
+    terminal.writeln(`Connecting to ${podName}...`);
+
+    try {
+      fitAddon.fit();
+    } catch {
+      // The first fit can fail if the tab is still measuring.
+    }
+    if (active) terminal.focus();
+
+    const unsubscribeData = api.onPodShellData((payload) => {
+      if (payload.id !== id) return;
+      terminal.write(payload.text);
+      setStatus("Connected");
+    });
+    const unsubscribeError = api.onPodShellError((payload) => {
+      if (payload.id !== id) return;
+      terminal.writeln(`\r\n${payload.message || "Shell error."}`);
+      setStatus(payload.message || "Shell error");
+    });
+    const unsubscribeClosed = api.onPodShellClosed((payload) => {
+      if (payload.id !== id) return;
+      setStatus("Closed");
+      terminal.writeln(
+        `\r\nShell closed${payload.signal ? ` (${payload.signal})` : payload.code === null ? "" : ` with code ${payload.code}`}`
+      );
+    });
+
+    api.startPodShell({
+      id,
+      context,
+      namespace,
+      podName,
+      cols: terminal.cols || 80,
+      rows: terminal.rows || 24
+    }).catch((cause) => {
+      setStatus(cause.message || "Unable to start shell.");
+      terminal.writeln(`\r\n${cause.message || "Unable to start shell."}`);
+    });
+
+    return () => {
+      unsubscribeData();
+      unsubscribeError();
+      unsubscribeClosed();
+      api.stopPodShell(id);
+      if (shellIdRef.current === id) shellIdRef.current = "";
+    };
+  }, [pod?.name, context, namespace]);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-white dark:bg-slate-950">
+      <div className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4 py-2 dark:border-slate-800 dark:bg-slate-950">
+        <div className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">Shell</div>
+        <div className="truncate text-xs text-slate-500 dark:text-slate-400">{status}</div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-hidden bg-white p-3 dark:bg-slate-950">
+        <div ref={containerRef} className="h-full min-h-0 overflow-hidden" />
+      </div>
+    </div>
+  );
+}
+
+function terminalTheme(effectiveTheme) {
+  if (effectiveTheme === "dark") {
+    return {
+      background: "#020617",
+      foreground: "#e2e8f0",
+      cursor: "#86efac",
+      selectionBackground: "#334155"
+    };
+  }
+
+  return {
+    background: "#ffffff",
+    foreground: "#0f172a",
+    cursor: "#2563eb",
+    selectionBackground: "#bfdbfe"
+  };
 }
 
 function SettingsPage({ theme, setTheme, onBack }) {
