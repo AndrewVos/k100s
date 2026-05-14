@@ -1,10 +1,9 @@
 import { forwardRef, memo, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
-  Tab,
-  TabGroup,
-  TabList,
-  TabPanel,
-  TabPanels
+  Menu,
+  MenuButton,
+  MenuItem,
+  MenuItems
 } from "@headlessui/react";
 import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter";
 import jsonLanguage from "react-syntax-highlighter/dist/esm/languages/prism/json";
@@ -19,8 +18,19 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { WebviewWindow, getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { ArrowDown, ArrowLeft, ArrowUp, Boxes, LoaderCircle, Server, Settings, X } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowUp,
+  Boxes,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  LoaderCircle,
+  Settings,
+  SquareTerminal,
+  X
+} from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
 
@@ -134,77 +144,6 @@ const LOG_CONTENT_HORIZONTAL_PADDING = 32;
 const LOG_FOOTER_HEIGHT = 56;
 const logMeasurementCache = new Map();
 
-function podWindowLabel(context, namespace, podName) {
-  const value = `${context}:${namespace}:${podName}`;
-  let hash = 0;
-
-  for (let index = 0; index < value.length; index += 1) {
-    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
-  }
-
-  return `pod-${hash.toString(36)}`;
-}
-
-function podWindowUrl(data) {
-  const params = new URLSearchParams({
-    view: "pod",
-    data: JSON.stringify(data)
-  });
-
-  return `/?${params.toString()}`;
-}
-
-function readPodWindowData() {
-  const params = new URLSearchParams(window.location.search);
-  if (params.get("view") !== "pod") return null;
-
-  try {
-    return JSON.parse(params.get("data") || "null");
-  } catch {
-    return null;
-  }
-}
-
-async function closeCurrentWindow() {
-  if ("__TAURI_INTERNALS__" in window) {
-    await getCurrentWebviewWindow().close();
-    return;
-  }
-
-  window.close();
-}
-
-async function openPodWindow({ context, namespace, nodeTone, pod }) {
-  if (!pod || !context || !namespace) return;
-
-  const label = podWindowLabel(context, namespace, pod.name);
-  const data = { context, namespace, nodeTone, pod };
-
-  if (!("__TAURI_INTERNALS__" in window)) {
-    window.open(podWindowUrl(data), label, "width=1180,height=780");
-    return;
-  }
-
-  const existing = await WebviewWindow.getByLabel(label);
-  if (existing) {
-    await existing.setFocus();
-    return;
-  }
-
-  const podWindow = new WebviewWindow(label, {
-    title: `${pod.name} - k100s`,
-    url: podWindowUrl(data),
-    width: 1180,
-    height: 780,
-    minWidth: 860,
-    minHeight: 580
-  });
-
-  podWindow.once("tauri://error", (event) => {
-    console.error("Unable to open pod window", event.payload);
-  });
-}
-
 function preparedLogText(text) {
   const value = String(text || " ");
   const cached = logMeasurementCache.get(value);
@@ -260,6 +199,17 @@ function namespaceStorageKey(context) {
   return `${SELECTED_NAMESPACE_KEY}.${context}`;
 }
 
+const POD_ACTIONS = {
+  logs: { label: "Logs" },
+  shell: { label: "Shell" },
+  pod: { label: "Pod" },
+  deployment: { label: "Deployment" }
+};
+
+function podTabId(context, namespace, podName, action = "logs") {
+  return `pod:${action}:${context}:${namespace}:${podName}`;
+}
+
 function getStoredTheme() {
   const storedTheme = window.localStorage.getItem(THEME_KEY);
   return THEME_OPTIONS.includes(storedTheme) ? storedTheme : "system";
@@ -309,6 +259,34 @@ function statusTone(status, detail) {
     return "bg-slate-100 text-slate-700 ring-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700";
   }
   return "bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-950 dark:text-rose-300 dark:ring-rose-800";
+}
+
+function podHealthGroup(pod) {
+  const value = `${pod.status} ${pod.detail}`.toLowerCase();
+  if (value.includes("ready") || value.includes("succeeded") || value.includes("completed")) return "healthy";
+  if (value.includes("pending") || value.includes("waiting") || value.includes("containercreating")) return "pending";
+  if (value.includes("running")) return "running";
+  return "unhealthy";
+}
+
+function podCountLabel(count, label) {
+  return `${count} ${count === 1 ? "pod" : "pods"} ${label}`;
+}
+
+function readinessSummaryTone(readyPercentage, totalPods) {
+  if (totalPods === 0) {
+    return "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300";
+  }
+  if (readyPercentage === 100) {
+    return "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200";
+  }
+  if (readyPercentage >= 80) {
+    return "border-yellow-200 bg-yellow-50 text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200";
+  }
+  if (readyPercentage >= 50) {
+    return "border-orange-200 bg-orange-50 text-orange-800 dark:border-orange-800 dark:bg-orange-950 dark:text-orange-200";
+  }
+  return "border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-800 dark:bg-rose-950 dark:text-rose-200";
 }
 
 const NODE_TONES = [
@@ -384,7 +362,7 @@ function SortButton({ active, direction, children, onClick }) {
     <button
       type="button"
       onClick={onClick}
-      className="flex h-full w-full cursor-pointer items-center gap-1 px-4 py-3 text-left text-xs font-semibold uppercase text-slate-500 hover:text-slate-950 dark:text-slate-400 dark:hover:text-slate-100"
+      className="flex h-full w-full cursor-pointer items-center gap-1 whitespace-nowrap px-2 py-3 text-left text-xs font-semibold uppercase text-slate-500 hover:text-slate-950 dark:text-slate-400 dark:hover:text-slate-100"
     >
       {children}
       {active ? (
@@ -395,6 +373,230 @@ function SortButton({ active, direction, children, onClick }) {
         )
       ) : null}
     </button>
+  );
+}
+
+function PodActionMenu({ pod, onOpen }) {
+  return (
+    <div className="flex justify-end">
+      <div
+        className="relative inline-flex rounded-md shadow-sm"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
+        <Menu>
+          <MenuButton
+            type="button"
+            className="grid size-9 cursor-pointer place-items-center rounded-md border border-slate-300 bg-white text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 focus:outline-none focus:ring-4 focus:ring-sky-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-900 dark:hover:text-slate-50 dark:focus:ring-sky-950"
+            title="Pod actions"
+          >
+            <ChevronDown className="size-4" aria-hidden="true" />
+          </MenuButton>
+          <MenuItems
+            anchor="bottom end"
+            className="z-50 w-56 rounded-md border border-slate-200 bg-white p-1 shadow-lg shadow-slate-900/10 outline-none [--anchor-gap:4px] dark:border-slate-800 dark:bg-slate-950 dark:shadow-black/30"
+          >
+            <MenuItem>
+              <button
+                type="button"
+                onClick={() => onOpen(pod, "shell")}
+                className="flex w-full cursor-pointer items-center gap-2 rounded px-3 py-2 text-left text-sm text-slate-700 transition data-focus:bg-slate-100 data-focus:text-slate-950 dark:text-slate-200 dark:data-focus:bg-slate-800 dark:data-focus:text-slate-50"
+              >
+                <SquareTerminal className="size-4 text-slate-500 dark:text-slate-400" aria-hidden="true" />
+                Launch shell
+              </button>
+            </MenuItem>
+            <MenuItem>
+              <button
+                type="button"
+                onClick={() => onOpen(pod, "pod")}
+                className="flex w-full cursor-pointer items-center gap-2 rounded px-3 py-2 text-left text-sm text-slate-700 transition data-focus:bg-slate-100 data-focus:text-slate-950 dark:text-slate-200 dark:data-focus:bg-slate-800 dark:data-focus:text-slate-50"
+              >
+                <FileText className="size-4 text-slate-500 dark:text-slate-400" aria-hidden="true" />
+                Describe pod
+              </button>
+            </MenuItem>
+            <MenuItem>
+              <button
+                type="button"
+                onClick={() => onOpen(pod, "deployment")}
+                className="flex w-full cursor-pointer items-center gap-2 rounded px-3 py-2 text-left text-sm text-slate-700 transition data-focus:bg-slate-100 data-focus:text-slate-950 dark:text-slate-200 dark:data-focus:bg-slate-800 dark:data-focus:text-slate-50"
+              >
+                <FileText className="size-4 text-slate-500 dark:text-slate-400" aria-hidden="true" />
+                Describe deployment
+              </button>
+            </MenuItem>
+          </MenuItems>
+        </Menu>
+      </div>
+    </div>
+  );
+}
+
+function PodTableColGroup() {
+  return (
+    <colgroup>
+      <col />
+      <col className="w-[5.5rem]" />
+      <col className="w-16" />
+      <col className="w-20" />
+      <col className="w-16" />
+      <col className="w-40" />
+      <col className="w-12" />
+    </colgroup>
+  );
+}
+
+function ClusterNamespaceMenu({
+  contexts,
+  context,
+  namespace,
+  loadingContexts,
+  loadingNamespaces,
+  namespaceOptionsByContext,
+  namespaceOptionsLoading,
+  namespaceOptionsErrors,
+  onOpen,
+  onLoadContext,
+  onSelect
+}) {
+  const [activeContext, setActiveContext] = useState("");
+  const hoverTimerRef = useRef(0);
+  const currentLabel = context && namespace ? `${context} / ${namespace}` : context || "Select cluster";
+  const activeContextName = activeContext || context || contexts[0]?.name || "";
+  const activeNamespaces = namespaceOptionsByContext[activeContextName];
+  const activeIsLoading =
+    namespaceOptionsLoading[activeContextName] ||
+    (activeContextName === context && loadingNamespaces && !activeNamespaces);
+  const activeError = namespaceOptionsErrors[activeContextName];
+
+  function openMenu() {
+    const nextContext = context || contexts[0]?.name || "";
+    setActiveContext(nextContext);
+    onOpen?.(nextContext);
+  }
+
+  function activateContext(nextContext) {
+    if (hoverTimerRef.current) {
+      window.clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = 0;
+    }
+    setActiveContext(nextContext);
+    onLoadContext?.(nextContext);
+  }
+
+  function scheduleContextActivation(nextContext) {
+    if (nextContext === activeContextName) return;
+    if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current);
+
+    hoverTimerRef.current = window.setTimeout(() => {
+      hoverTimerRef.current = 0;
+      activateContext(nextContext);
+    }, 350);
+  }
+
+  function cancelScheduledActivation() {
+    if (!hoverTimerRef.current) return;
+    window.clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = 0;
+  }
+
+  useEffect(() => cancelScheduledActivation, []);
+
+  return (
+    <Menu>
+      <MenuButton
+        type="button"
+        onClick={openMenu}
+        disabled={loadingContexts || contexts.length === 0}
+        className="inline-flex h-10 max-w-[32rem] cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950 focus:outline-none focus:ring-4 focus:ring-sky-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-200 dark:hover:bg-slate-900 dark:hover:text-slate-50 dark:focus:ring-sky-950 dark:disabled:bg-slate-900 dark:disabled:text-slate-500"
+        title={currentLabel}
+      >
+        <span className="truncate">{loadingContexts ? "Loading clusters..." : currentLabel}</span>
+        <ChevronDown className="size-4 shrink-0" aria-hidden="true" />
+      </MenuButton>
+      <MenuItems
+        anchor="bottom end"
+        className="z-50 grid max-h-[min(34rem,calc(100vh-8rem))] w-[min(42rem,calc(100vw-2rem))] grid-cols-[minmax(12rem,16rem)_minmax(14rem,1fr)] overflow-hidden rounded-md border border-slate-200 bg-white p-1 shadow-lg shadow-slate-900/10 outline-none [--anchor-gap:4px] dark:border-slate-800 dark:bg-slate-950 dark:shadow-black/30"
+      >
+        {contexts.length === 0 ? (
+          <div className="col-span-2 px-3 py-2 text-sm text-slate-500 dark:text-slate-400">No clusters found</div>
+        ) : (
+          <>
+            <div className="min-h-0 overflow-auto border-r border-slate-200 pr-1 dark:border-slate-800">
+              {contexts.map((item) => {
+                const contextName = item.name;
+                const options = namespaceOptionsByContext[contextName];
+                const isLoading =
+                  namespaceOptionsLoading[contextName] ||
+                  (contextName === context && loadingNamespaces && !options);
+                const isActive = contextName === activeContextName;
+                const isSelected = contextName === context;
+
+                return (
+                  <button
+                    key={contextName}
+                    type="button"
+                    onMouseEnter={() => scheduleContextActivation(contextName)}
+                    onMouseLeave={cancelScheduledActivation}
+                    onFocus={() => activateContext(contextName)}
+                    onClick={() => activateContext(contextName)}
+                    className={`flex w-full cursor-pointer items-center justify-between gap-2 rounded px-3 py-2 text-left text-sm transition ${
+                      isActive
+                        ? "bg-slate-100 text-slate-950 dark:bg-slate-800 dark:text-slate-50"
+                        : "text-slate-700 hover:bg-slate-50 hover:text-slate-950 dark:text-slate-200 dark:hover:bg-slate-900 dark:hover:text-slate-50"
+                    }`}
+                  >
+                    <span className={`truncate ${isSelected ? "font-semibold" : ""}`} title={contextName}>
+                      {contextName}
+                    </span>
+                    <span className="flex shrink-0 items-center gap-1">
+                      {isLoading ? <LoaderCircle className="size-4 animate-spin text-slate-500" aria-hidden="true" /> : null}
+                      <ChevronRight className="size-4 text-slate-400" aria-hidden="true" />
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="min-h-0 overflow-auto pl-1">
+              {activeIsLoading ? (
+                <div className="flex items-center gap-2 px-3 py-2 text-sm text-slate-500 dark:text-slate-400">
+                  <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+                  Loading namespaces...
+                </div>
+              ) : activeError ? (
+                <div className="px-3 py-2 text-sm text-rose-600 dark:text-rose-300">{activeError}</div>
+              ) : activeNamespaces?.length ? (
+                activeNamespaces.map((itemNamespace) => {
+                  const isSelected = activeContextName === context && itemNamespace === namespace;
+
+                  return (
+                    <MenuItem key={`${activeContextName}:${itemNamespace}`}>
+                      <button
+                        type="button"
+                        onClick={() => onSelect(activeContextName, itemNamespace)}
+                        className={`flex w-full cursor-pointer items-center justify-between gap-3 rounded px-3 py-2 text-left text-sm transition data-focus:bg-slate-100 data-focus:text-slate-950 dark:data-focus:bg-slate-800 dark:data-focus:text-slate-50 ${
+                          isSelected
+                            ? "font-semibold text-sky-700 dark:text-sky-300"
+                            : "text-slate-700 dark:text-slate-200"
+                        }`}
+                      >
+                        <span className="truncate">{itemNamespace}</span>
+                        {isSelected ? <span className="text-xs uppercase text-sky-600 dark:text-sky-300">Current</span> : null}
+                      </button>
+                    </MenuItem>
+                  );
+                })
+              ) : activeNamespaces ? (
+                <div className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">No namespaces</div>
+              ) : (
+                <div className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">Choose a cluster</div>
+              )}
+            </div>
+          </>
+        )}
+      </MenuItems>
+    </Menu>
   );
 }
 
@@ -785,12 +987,11 @@ const LogScrollArea = memo(forwardRef(function LogScrollArea(
   );
 }));
 
-function PodDetailsView({ pod, context, namespace, nodeTone, effectiveTheme, onClose }) {
-  const detailTabs = ["Logs", "Pod", "Deployment", "Shell"];
+function PodDetailsView({ pod, context, namespace, nodeTone, effectiveTheme, action = "logs" }) {
+  const actionKey = POD_ACTIONS[action] ? action : "logs";
   const [logLines, setLogLines] = useState([]);
   const [logAutoScroll, setLogAutoScroll] = useState(true);
   const [logFilter, setLogFilter] = useState("");
-  const [selectedTabIndex, setSelectedTabIndex] = useState(0);
   const [describeText, setDescribeText] = useState("");
   const [describeLoading, setDescribeLoading] = useState(false);
   const [describeError, setDescribeError] = useState("");
@@ -809,10 +1010,6 @@ function PodDetailsView({ pod, context, namespace, nodeTone, effectiveTheme, onC
     () => createSyntaxStyle(effectiveTheme === "dark" ? oneDark : oneLight),
     [effectiveTheme]
   );
-
-  useEffect(() => {
-    setSelectedTabIndex(0);
-  }, [pod?.name]);
 
   function handleLogBottomStateChange(isAtBottom) {
     if (bottomStateTimerRef.current) {
@@ -891,7 +1088,7 @@ function PodDetailsView({ pod, context, namespace, nodeTone, effectiveTheme, onC
 
   useEffect(() => {
     const podName = pod?.name;
-    if (!podName || !context || !namespace) return undefined;
+    if (actionKey !== "logs" || !podName || !context || !namespace) return undefined;
 
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     logStreamIdRef.current = id;
@@ -927,11 +1124,11 @@ function PodDetailsView({ pod, context, namespace, nodeTone, effectiveTheme, onC
       unsubscribeClosed();
       api.stopPodLogs(id);
     };
-  }, [pod?.name, context, namespace]);
+  }, [actionKey, pod?.name, context, namespace]);
 
   useEffect(() => {
     const podName = pod?.name;
-    if (!podName || !context || !namespace) return undefined;
+    if (actionKey !== "pod" || !podName || !context || !namespace) return undefined;
 
     const requestId = describeRequestRef.current + 1;
     describeRequestRef.current = requestId;
@@ -956,11 +1153,11 @@ function PodDetailsView({ pod, context, namespace, nodeTone, effectiveTheme, onC
     return () => {
       describeRequestRef.current += 1;
     };
-  }, [pod?.name, context, namespace]);
+  }, [actionKey, pod?.name, context, namespace]);
 
   useEffect(() => {
     const podName = pod?.name;
-    if (!podName || !context || !namespace) return undefined;
+    if (actionKey !== "deployment" || !podName || !context || !namespace) return undefined;
 
     const requestId = deploymentDescribeRequestRef.current + 1;
     deploymentDescribeRequestRef.current = requestId;
@@ -985,127 +1182,66 @@ function PodDetailsView({ pod, context, namespace, nodeTone, effectiveTheme, onC
     return () => {
       deploymentDescribeRequestRef.current += 1;
     };
-  }, [pod?.name, context, namespace]);
+  }, [actionKey, pod?.name, context, namespace]);
 
   if (!pod) {
     return (
-      <main className="grid h-screen place-items-center bg-white px-6 text-center text-slate-950 dark:bg-slate-950 dark:text-slate-100">
+      <section className="grid h-full place-items-center bg-white px-6 text-center text-slate-950 dark:bg-slate-950 dark:text-slate-100">
         <div>
           <h1 className="text-base font-semibold">Pod details unavailable</h1>
           <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">This pod window did not receive pod details.</p>
         </div>
-      </main>
+      </section>
     );
   }
 
   return (
-    <main className="flex h-screen flex-col overflow-hidden bg-white text-slate-950 dark:bg-slate-950 dark:text-slate-100">
-          <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 dark:border-slate-800">
-            <div className="min-w-0">
-              <h1 className="truncate text-lg font-semibold text-slate-950 dark:text-slate-100">
-                {pod?.name}
-              </h1>
-              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-                {context} / {namespace}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={onClose}
-              className="grid size-9 shrink-0 cursor-pointer place-items-center rounded-md border border-slate-200 text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-900 dark:hover:text-slate-50"
-              title="Close"
-            >
-              <X className="size-4" aria-hidden="true" />
-            </button>
-          </div>
-
-          <div className="grid gap-3 border-b border-slate-200 bg-slate-50 px-5 py-4 dark:border-slate-800 dark:bg-slate-900 sm:grid-cols-2 lg:grid-cols-6">
-            <div>
-              <div className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">Status</div>
-              <div className="mt-1">
-                <span className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ring-1 ${statusTone(pod?.status, pod?.detail)}`}>
-                  {pod?.detail || pod?.status}
-                </span>
-              </div>
-            </div>
-            <div>
-              <div className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">Ready</div>
-              <div className="mt-1 text-sm font-medium text-slate-950 dark:text-slate-100">{pod?.ready}</div>
-            </div>
-            <div>
-              <div className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">Restarts</div>
-              <div className="mt-1 text-sm font-medium text-slate-950 dark:text-slate-100">{pod?.restarts}</div>
-            </div>
-            <div>
-              <div className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">Age</div>
-              <div className="mt-1 text-sm font-medium text-slate-950 dark:text-slate-100">{formatAge(pod?.age)}</div>
-            </div>
-            <div className="sm:col-span-2">
-              <div className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">Node</div>
-              <div className="mt-1">
-                <NodePill nodeName={pod?.node} tone={nodeTone} />
-              </div>
-            </div>
-          </div>
-
-          <TabGroup selectedIndex={selectedTabIndex} onChange={setSelectedTabIndex} className="flex min-h-0 flex-1 flex-col">
-            <TabList className="flex gap-1 border-b border-slate-200 bg-white px-4 pt-3 dark:border-slate-800 dark:bg-slate-950">
-              {detailTabs.map((label) => (
-                <Tab
-                  key={label}
-                  className={({ selected }) =>
-                    `cursor-pointer rounded-t-md border border-b-0 px-4 py-2 text-sm font-medium outline-none transition ${
-                      selected
-                        ? "border-slate-200 bg-slate-50 text-slate-950 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100"
-                        : "border-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-100"
-                    }`
-                  }
-                >
-                  {label}
-                </Tab>
-              ))}
-            </TabList>
-            <TabPanels className="min-h-0 flex-1">
-              <TabPanel className="flex h-full min-h-0 flex-col">
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-2 dark:border-slate-800 dark:bg-slate-950">
-                  <div className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">Logs</div>
-                  <div className="flex flex-wrap items-center justify-end gap-3">
-                    <label className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300">
-                      Filter
-                      <input
-                        type="search"
-                        value={logFilter}
-                        onChange={(event) => setLogFilter(event.target.value)}
-                        className="h-8 w-56 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-sky-500 focus:ring-4 focus:ring-sky-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-sky-400 dark:focus:ring-sky-950"
-                        placeholder="Text in logs"
-                      />
-                    </label>
-                  </div>
+    <section className="flex h-full min-h-0 flex-col overflow-hidden bg-white text-slate-950 dark:bg-slate-950 dark:text-slate-100">
+          <div className="flex min-h-0 flex-1 flex-col">
+            {actionKey === "logs" ? (
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-2 dark:border-slate-800 dark:bg-slate-950">
+                <div className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">Logs</div>
+                <div className="flex flex-wrap items-center justify-end gap-3">
+                  <label className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300">
+                    Filter
+                    <input
+                      type="search"
+                      value={logFilter}
+                      onChange={(event) => setLogFilter(event.target.value)}
+                      className="h-8 w-56 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-sky-500 focus:ring-4 focus:ring-sky-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-sky-400 dark:focus:ring-sky-950"
+                      placeholder="Text in logs"
+                    />
+                  </label>
                 </div>
+              </div>
+            ) : null}
 
-                <div className="relative min-h-0 flex-1">
-                  <LogScrollArea
-                    ref={logListRef}
-                    lines={visibleLogLines}
-                    totalLineCount={logLines.length}
-                    filter={logFilter}
-                    autoScroll={logAutoScroll}
-                    onBottomStateChange={handleLogBottomStateChange}
-                    onUserScrollIntent={markLogUserScrollIntent}
-                  />
-                  {!logAutoScroll && visibleLogLines.length > 0 ? (
-                    <button
-                      type="button"
-                      onClick={jumpToLogBottom}
-                      className="absolute bottom-4 left-1/2 grid size-10 -translate-x-1/2 cursor-pointer place-items-center rounded-full border border-sky-200 bg-sky-600 text-white shadow-lg shadow-sky-900/20 transition hover:bg-sky-700 dark:border-sky-800 dark:shadow-black/30"
-                      title="Jump to bottom"
-                    >
-                      <ArrowDown className="size-5" aria-hidden="true" />
-                    </button>
-                  ) : null}
-                </div>
-              </TabPanel>
-              <TabPanel className="h-full min-h-0 bg-white dark:bg-slate-950">
+            {actionKey === "logs" ? (
+              <div className="relative min-h-0 flex-1">
+                <LogScrollArea
+                  ref={logListRef}
+                  lines={visibleLogLines}
+                  totalLineCount={logLines.length}
+                  filter={logFilter}
+                  autoScroll={logAutoScroll}
+                  onBottomStateChange={handleLogBottomStateChange}
+                  onUserScrollIntent={markLogUserScrollIntent}
+                />
+                {!logAutoScroll && visibleLogLines.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={jumpToLogBottom}
+                    className="absolute bottom-4 left-1/2 grid size-10 -translate-x-1/2 cursor-pointer place-items-center rounded-full border border-sky-200 bg-sky-600 text-white shadow-lg shadow-sky-900/20 transition hover:bg-sky-700 dark:border-sky-800 dark:shadow-black/30"
+                    title="Jump to bottom"
+                  >
+                    <ArrowDown className="size-5" aria-hidden="true" />
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+
+            {actionKey === "pod" ? (
+              <div className="min-h-0 flex-1 bg-white dark:bg-slate-950">
                 <DescribePanel
                   loading={describeLoading}
                   error={describeError}
@@ -1114,8 +1250,11 @@ function PodDetailsView({ pod, context, namespace, nodeTone, effectiveTheme, onC
                   failureTitle="Pod details failed"
                   syntaxStyle={syntaxStyle}
                 />
-              </TabPanel>
-              <TabPanel className="h-full min-h-0 bg-white dark:bg-slate-950">
+              </div>
+            ) : null}
+
+            {actionKey === "deployment" ? (
+              <div className="min-h-0 flex-1 bg-white dark:bg-slate-950">
                 <DescribePanel
                   loading={deploymentDescribeLoading}
                   error={deploymentDescribeError}
@@ -1124,19 +1263,22 @@ function PodDetailsView({ pod, context, namespace, nodeTone, effectiveTheme, onC
                   failureTitle="Deployment details failed"
                   syntaxStyle={syntaxStyle}
                 />
-              </TabPanel>
-              <TabPanel className="h-full min-h-0 bg-white dark:bg-slate-950">
+              </div>
+            ) : null}
+
+            {actionKey === "shell" ? (
+              <div className="min-h-0 flex-1 bg-white dark:bg-slate-950">
                 <ShellPanel
                   pod={pod}
                   context={context}
                   namespace={namespace}
                   effectiveTheme={effectiveTheme}
-                  active={selectedTabIndex === detailTabs.indexOf("Shell")}
+                  active
                 />
-              </TabPanel>
-            </TabPanels>
-          </TabGroup>
-    </main>
+              </div>
+            ) : null}
+          </div>
+    </section>
   );
 }
 
@@ -1146,7 +1288,6 @@ function ShellPanel({ pod, context, namespace, effectiveTheme, active }) {
   const fitAddonRef = useRef(null);
   const shellIdRef = useRef("");
   const resizeFrameRef = useRef(0);
-  const [status, setStatus] = useState("Connecting...");
 
   function fitShellToContainer() {
     if (!terminalRef.current || !fitAddonRef.current) return;
@@ -1229,7 +1370,6 @@ function ShellPanel({ pod, context, namespace, effectiveTheme, active }) {
 
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     shellIdRef.current = id;
-    setStatus("Connecting...");
     terminal.reset();
     terminal.writeln(`Connecting to ${podName}...`);
 
@@ -1243,16 +1383,13 @@ function ShellPanel({ pod, context, namespace, effectiveTheme, active }) {
     const unsubscribeData = api.onPodShellData((payload) => {
       if (payload.id !== id) return;
       terminal.write(payload.text);
-      setStatus("Connected");
     });
     const unsubscribeError = api.onPodShellError((payload) => {
       if (payload.id !== id) return;
       terminal.writeln(`\r\n${payload.message || "Shell error."}`);
-      setStatus(payload.message || "Shell error");
     });
     const unsubscribeClosed = api.onPodShellClosed((payload) => {
       if (payload.id !== id) return;
-      setStatus("Closed");
       terminal.writeln(
         `\r\nShell closed${payload.signal ? ` (${payload.signal})` : payload.code === null ? "" : ` with code ${payload.code}`}`
       );
@@ -1266,7 +1403,6 @@ function ShellPanel({ pod, context, namespace, effectiveTheme, active }) {
       cols: terminal.cols || 80,
       rows: terminal.rows || 24
     }).catch((cause) => {
-      setStatus(cause.message || "Unable to start shell.");
       terminal.writeln(`\r\n${cause.message || "Unable to start shell."}`);
     });
 
@@ -1281,10 +1417,6 @@ function ShellPanel({ pod, context, namespace, effectiveTheme, active }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-white dark:bg-slate-950">
-      <div className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4 py-2 dark:border-slate-800 dark:bg-slate-950">
-        <div className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">Shell</div>
-        <div className="truncate text-xs text-slate-500 dark:text-slate-400">{status}</div>
-      </div>
       <div className="min-h-0 flex-1 overflow-hidden bg-white p-3 dark:bg-slate-950">
         <div ref={containerRef} className="h-full min-h-0 overflow-hidden" />
       </div>
@@ -1389,6 +1521,9 @@ export default function App() {
   const [context, setContext] = useState("");
   const [namespaces, setNamespaces] = useState([]);
   const [namespacesContext, setNamespacesContext] = useState("");
+  const [namespaceOptionsByContext, setNamespaceOptionsByContext] = useState({});
+  const [namespaceOptionsLoading, setNamespaceOptionsLoading] = useState({});
+  const [namespaceOptionsErrors, setNamespaceOptionsErrors] = useState({});
   const [namespace, setNamespace] = useState("");
   const [pods, setPods] = useState([]);
   const [loading, setLoading] = useState({ contexts: true, namespaces: false, pods: false });
@@ -1397,7 +1532,10 @@ export default function App() {
   const [lastUpdated, setLastUpdated] = useState("");
   const [podSort, setPodSort] = useState({ key: "name", direction: "asc" });
   const [podFilter, setPodFilter] = useState("");
+  const [activeWorkspaceTab, setActiveWorkspaceTab] = useState("pods");
+  const [openPodTabs, setOpenPodTabs] = useState([]);
   const namespacesRequestRef = useRef(0);
+  const namespaceOptionsRequestRef = useRef(0);
   const activeNamespaceRequestIdRef = useRef("");
   const podsRequestRef = useRef(0);
   const activePodsRequestIdRef = useRef("");
@@ -1414,7 +1552,6 @@ export default function App() {
 
     return new Map(nodeNames.map((nodeName, index) => [nodeName, NODE_TONES[index % NODE_TONES.length]]));
   }, [pods]);
-  const podWindowData = useMemo(readPodWindowData, []);
   const visiblePods = useMemo(() => {
     const filter = podFilter.trim().toLowerCase();
     if (!filter) return pods;
@@ -1452,6 +1589,29 @@ export default function App() {
       return leftValue.localeCompare(rightValue, undefined, { numeric: true }) * direction;
     });
   }, [podSort, visiblePods]);
+  const podSummary = useMemo(() => {
+    const counts = pods.reduce(
+      (current, pod) => {
+        current[podHealthGroup(pod)] += 1;
+        return current;
+      },
+      { healthy: 0, running: 0, pending: 0, unhealthy: 0 }
+    );
+    const readyPercentage = pods.length ? Math.round((counts.healthy / pods.length) * 100) : 0;
+
+    const parts = [
+      podCountLabel(counts.healthy, "healthy"),
+      counts.running ? podCountLabel(counts.running, "running") : "",
+      counts.pending ? podCountLabel(counts.pending, "pending") : "",
+      counts.unhealthy ? podCountLabel(counts.unhealthy, "unhealthy") : ""
+    ].filter(Boolean);
+
+    return {
+      health: parts.length ? parts.join(", ") : podCountLabel(0, "healthy"),
+      readyPercentage,
+      tone: readinessSummaryTone(readyPercentage, pods.length)
+    };
+  }, [pods]);
 
   function changePodSort(key) {
     setPodSort((current) => ({
@@ -1460,13 +1620,29 @@ export default function App() {
     }));
   }
 
-  function handleOpenPod(pod) {
-    openPodWindow({
+  function handleOpenPod(pod, action = "logs") {
+    if (!pod || !context || !namespace) return;
+
+    const podAction = POD_ACTIONS[action] ? action : "logs";
+    const tab = {
+      id: podTabId(context, namespace, pod.name, podAction),
+      action: podAction,
       context,
       namespace,
       nodeTone: nodeToneByName.get(pod.node),
       pod
+    };
+
+    setOpenPodTabs((current) => {
+      if (current.some((item) => item.id === tab.id)) return current;
+      return [...current, tab];
     });
+    setActiveWorkspaceTab(tab.id);
+  }
+
+  function closePodTab(tabId) {
+    setOpenPodTabs((current) => current.filter((tab) => tab.id !== tabId));
+    setActiveWorkspaceTab((current) => (current === tabId ? "pods" : current));
   }
 
   function changeNamespace(nextNamespace) {
@@ -1474,6 +1650,18 @@ export default function App() {
     if (context && namespacesContext === context && nextNamespace) {
       window.localStorage.setItem(namespaceStorageKey(context), nextNamespace);
     }
+  }
+
+  function selectClusterNamespace(nextContext, nextNamespace) {
+    if (!nextContext || !nextNamespace) return;
+
+    window.localStorage.setItem(namespaceStorageKey(nextContext), nextNamespace);
+    if (nextContext === context) {
+      changeNamespace(nextNamespace);
+      return;
+    }
+
+    setContext(nextContext);
   }
 
   function clearError() {
@@ -1493,6 +1681,13 @@ export default function App() {
 
   function requestKey(kind, id) {
     return `${kind}:${id}`;
+  }
+
+  function cacheNamespaces(nextContext, nextNamespaces) {
+    setNamespaceOptionsByContext((current) => ({
+      ...current,
+      [nextContext]: nextNamespaces
+    }));
   }
 
   async function loadContexts() {
@@ -1548,6 +1743,7 @@ export default function App() {
 
       setNamespaces(result);
       setNamespacesContext(nextContext);
+      cacheNamespaces(nextContext, result);
       setNamespace(nextNamespace);
       if (nextNamespace) {
         window.localStorage.setItem(namespaceStorageKey(nextContext), nextNamespace);
@@ -1563,6 +1759,32 @@ export default function App() {
       if (requestId === namespacesRequestRef.current) {
         setLoading((current) => ({ ...current, namespaces: false }));
       }
+    }
+  }
+
+  async function loadNamespaceOptions(nextContext) {
+    if (!nextContext || namespaceOptionsByContext[nextContext] || namespaceOptionsLoading[nextContext]) return;
+
+    const requestId = namespaceOptionsRequestRef.current + 1;
+    namespaceOptionsRequestRef.current = requestId;
+    const requestKeyValue = requestKey("namespace-options", requestId);
+    setNamespaceOptionsLoading((current) => ({ ...current, [nextContext]: true }));
+    setNamespaceOptionsErrors((current) => {
+      const next = { ...current };
+      delete next[nextContext];
+      return next;
+    });
+
+    try {
+      const result = await api.getNamespaces(nextContext, requestKeyValue);
+      cacheNamespaces(nextContext, result);
+    } catch (cause) {
+      setNamespaceOptionsErrors((current) => ({
+        ...current,
+        [nextContext]: cause.message || "Unable to load namespaces."
+      }));
+    } finally {
+      setNamespaceOptionsLoading((current) => ({ ...current, [nextContext]: false }));
     }
   }
 
@@ -1609,36 +1831,35 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (podWindowData) return;
     loadContexts();
-  }, [podWindowData]);
+  }, []);
 
   useEffect(() => {
-    if (podWindowData) return;
     if (context) window.localStorage.setItem(SELECTED_CONTEXT_KEY, context);
-  }, [context, podWindowData]);
+  }, [context]);
 
   useEffect(() => {
-    if (podWindowData) return;
     if (context && namespace) {
       if (namespacesContext === context && namespaces.includes(namespace)) {
         window.localStorage.setItem(namespaceStorageKey(context), namespace);
       }
     }
-  }, [context, namespace, namespaces, namespacesContext, podWindowData]);
+  }, [context, namespace, namespaces, namespacesContext]);
 
   useEffect(() => {
-    if (podWindowData) return;
+    if (!namespacesContext) return;
+    cacheNamespaces(namespacesContext, namespaces);
+  }, [namespaces, namespacesContext]);
+
+  useEffect(() => {
     loadNamespaces(context);
-  }, [context, podWindowData]);
+  }, [context]);
 
   useEffect(() => {
-    if (podWindowData) return;
     loadPods(context, namespace);
-  }, [context, namespace, podWindowData]);
+  }, [context, namespace]);
 
   useEffect(() => {
-    if (podWindowData) return undefined;
     if (!context || !namespace) return undefined;
 
     const interval = window.setInterval(() => {
@@ -1646,7 +1867,7 @@ export default function App() {
     }, 5000);
 
     return () => window.clearInterval(interval);
-  }, [context, namespace, podWindowData]);
+  }, [context, namespace]);
 
   const isBusy = loading.contexts || loading.namespaces || loading.pods;
   const canRetryNamespaces = errorSource === "namespaces" && context;
@@ -1668,19 +1889,6 @@ export default function App() {
     return () => media.removeEventListener("change", syncTheme);
   }, [theme]);
 
-  if (podWindowData) {
-    return (
-      <PodDetailsView
-        pod={podWindowData.pod}
-        context={podWindowData.context}
-        namespace={podWindowData.namespace}
-        nodeTone={podWindowData.nodeTone}
-        effectiveTheme={effectiveTheme}
-        onClose={closeCurrentWindow}
-      />
-    );
-  }
-
   if (page === "settings") {
     return <SettingsPage theme={theme} setTheme={setTheme} onBack={() => setPage("pods")} />;
   }
@@ -1688,51 +1896,100 @@ export default function App() {
   return (
     <main className="flex h-screen flex-col overflow-hidden bg-slate-100 text-slate-950 dark:bg-slate-950 dark:text-slate-100">
       <header className="shrink-0 border-b border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950">
-        <div className="flex w-full items-center justify-between gap-4 px-6 py-4">
+        <div className="flex w-full items-center justify-between gap-4 border-b border-slate-200 bg-slate-50 px-6 py-3 dark:border-slate-800 dark:bg-slate-900">
           <h1 className="text-xl font-semibold tracking-normal">k100s</h1>
+          <div className="flex min-w-0 items-center gap-2">
+            <ClusterNamespaceMenu
+              contexts={contexts}
+              context={context}
+              namespace={namespace}
+              loadingContexts={loading.contexts}
+              loadingNamespaces={loading.namespaces}
+              namespaceOptionsByContext={namespaceOptionsByContext}
+              namespaceOptionsLoading={namespaceOptionsLoading}
+              namespaceOptionsErrors={namespaceOptionsErrors}
+              onOpen={loadNamespaceOptions}
+              onLoadContext={loadNamespaceOptions}
+              onSelect={selectClusterNamespace}
+            />
+            <button
+              type="button"
+              onClick={() => setPage("settings")}
+              className="grid size-10 shrink-0 cursor-pointer place-items-center rounded-md border border-slate-200 text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-900 dark:hover:text-slate-50"
+              title="Settings"
+            >
+              <Settings className="size-5" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
 
-          <button
-            type="button"
-            onClick={() => setPage("settings")}
-            className="grid size-10 cursor-pointer place-items-center rounded-md border border-slate-200 text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-900 dark:hover:text-slate-50"
-            title="Settings"
-          >
-            <Settings className="size-5" aria-hidden="true" />
-          </button>
+        <div className="px-6 pt-2">
+          <div className="flex gap-1 overflow-x-auto">
+            <button
+              type="button"
+              onClick={() => setActiveWorkspaceTab("pods")}
+              className={`shrink-0 cursor-pointer rounded-t-md border border-b-0 px-4 py-2 text-sm font-medium outline-none transition ${
+                activeWorkspaceTab === "pods"
+                  ? "border-slate-200 bg-white text-slate-950 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-100"
+                  : "border-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-100"
+              }`}
+            >
+              Pods
+            </button>
+            {openPodTabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveWorkspaceTab(tab.id)}
+                className={`flex max-w-64 shrink-0 cursor-pointer items-center gap-2 rounded-t-md border border-b-0 px-3 py-2 text-sm font-medium outline-none transition ${
+                  activeWorkspaceTab === tab.id
+                    ? "border-slate-200 bg-white text-slate-950 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-100"
+                    : "border-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-100"
+                }`}
+                title={`${tab.pod.name} - ${POD_ACTIONS[tab.action]?.label || "Logs"}`}
+              >
+                <span className="truncate">{tab.pod.name}</span>
+                <span className="shrink-0 text-xs font-semibold text-slate-400 dark:text-slate-500">
+                  {POD_ACTIONS[tab.action]?.label || "Logs"}
+                </span>
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    closePodTab(tab.id);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      closePodTab(tab.id);
+                    }
+                  }}
+                  className="grid size-5 shrink-0 cursor-pointer place-items-center rounded text-slate-500 transition hover:bg-slate-200 hover:text-slate-950 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+                  title="Close tab"
+                >
+                  <X className="size-3.5" aria-hidden="true" />
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
       </header>
 
-      <section className="flex min-h-0 w-full flex-1 flex-col px-6 py-5">
-        <div className="grid shrink-0 gap-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 md:grid-cols-[1fr_1fr_1fr_auto] md:items-end">
-          <SelectField
-            label="Cluster"
-            value={context}
-            onChange={setContext}
-            disabled={loading.contexts || contexts.length === 0}
-          >
-            {contexts.length === 0 ? <option value="">No clusters found</option> : null}
-            {contexts.map((item) => (
-              <option key={item.name} value={item.name}>
-                {item.name}
-              </option>
-            ))}
-          </SelectField>
+      <div className="min-h-0 flex-1">
+        <section className={`h-full min-h-0 w-full flex-col bg-white dark:bg-slate-950 ${activeWorkspaceTab === "pods" ? "flex" : "hidden"}`}>
+        <div className="flex shrink-0 flex-wrap items-end justify-between gap-3 border-b border-slate-200 bg-white px-6 py-4 dark:border-slate-800 dark:bg-slate-950">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className={`flex h-10 items-center rounded-md border px-3 text-sm font-medium ${podSummary.tone}`}>
+              {podSummary.health}
+            </div>
+            <div className={`flex h-10 items-center rounded-md border px-3 text-sm font-medium ${podSummary.tone}`}>
+              {podSummary.readyPercentage}% ready
+            </div>
+          </div>
 
-          <SelectField
-            label="Namespace"
-            value={namespace}
-            onChange={changeNamespace}
-            disabled={!context || loading.namespaces || namespaces.length === 0}
-          >
-            {namespaces.length === 0 ? <option value="">No namespaces found</option> : null}
-            {namespaces.map((item) => (
-              <option key={item} value={item}>
-                {item}
-              </option>
-            ))}
-          </SelectField>
-
-          <label className="grid gap-1.5 text-sm font-medium text-slate-700 dark:text-slate-300">
+          <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
             Filter
             <input
               type="search"
@@ -1742,26 +1999,20 @@ export default function App() {
               placeholder="Filter pods"
             />
           </label>
-
-          <div className="flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">
-            <Server className="size-4 text-slate-500 dark:text-slate-400" aria-hidden="true" />
-            {sortedPods.length === pods.length ? `${pods.length} pods` : `${sortedPods.length}/${pods.length} pods`}
-          </div>
         </div>
 
         {error ? (
-          <div className="mt-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-200">
+          <div className="mx-6 mt-5 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-200">
             {error}
           </div>
         ) : null}
 
-        <div className="mt-5 flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-950">
-          <div className="shrink-0 flex items-center justify-between gap-4 px-4 py-3">
-            <div>
-              <h2 className="text-base font-semibold text-slate-950 dark:text-slate-100">Pods</h2>
+        <div className={`${error ? "mt-5" : ""} flex min-h-0 flex-1 flex-col overflow-hidden bg-white dark:bg-slate-950`}>
+          {isBusy ? (
+            <div className="shrink-0 border-b border-slate-200 px-6 py-2 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
+              Loading...
             </div>
-            {isBusy ? <span className="text-sm text-slate-500 dark:text-slate-400">Loading...</span> : null}
-          </div>
+          ) : null}
 
           {!context ? (
             <EmptyState title="No cluster selected" message="Make sure kubectl is installed and has configured contexts." />
@@ -1790,37 +2041,41 @@ export default function App() {
             <div className="flex min-h-0 flex-1 flex-col border-t border-slate-200 dark:border-slate-800">
               <div className="shrink-0 overflow-hidden border-b border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900">
                 <table className="min-w-full table-fixed text-left text-sm">
+                  <PodTableColGroup />
                   <thead className="text-xs uppercase text-slate-500 dark:text-slate-400">
                     <tr>
-                      <th className="w-2/5 p-0 font-semibold">
+                      <th className="p-0 font-semibold">
                         <SortButton active={podSort.key === "name"} direction={podSort.direction} onClick={() => changePodSort("name")}>
                           Name
                         </SortButton>
                       </th>
-                      <th className="w-32 p-0 font-semibold">
+                      <th className="p-0 font-semibold">
                         <SortButton active={podSort.key === "detail"} direction={podSort.direction} onClick={() => changePodSort("detail")}>
                           Status
                         </SortButton>
                       </th>
-                      <th className="w-24 p-0 font-semibold">
+                      <th className="p-0 font-semibold">
                         <SortButton active={podSort.key === "ready"} direction={podSort.direction} onClick={() => changePodSort("ready")}>
                           Ready
                         </SortButton>
                       </th>
-                      <th className="w-24 p-0 font-semibold">
+                      <th className="p-0 font-semibold">
                         <SortButton active={podSort.key === "restarts"} direction={podSort.direction} onClick={() => changePodSort("restarts")}>
                           Restarts
                         </SortButton>
                       </th>
-                      <th className="w-24 p-0 font-semibold">
+                      <th className="p-0 font-semibold">
                         <SortButton active={podSort.key === "age"} direction={podSort.direction} onClick={() => changePodSort("age")}>
                           Age
                         </SortButton>
                       </th>
-                      <th className="w-1/4 p-0 font-semibold">
+                      <th className="p-0 font-semibold">
                         <SortButton active={podSort.key === "node"} direction={podSort.direction} onClick={() => changePodSort("node")}>
                           Node
                         </SortButton>
+                      </th>
+                      <th className="px-2 py-3">
+                        <span className="sr-only">Pod actions</span>
                       </th>
                     </tr>
                   </thead>
@@ -1829,34 +2084,38 @@ export default function App() {
 
               <div className="min-h-0 flex-1 overflow-auto">
                 <table className="min-w-full table-fixed text-left text-sm">
+                  <PodTableColGroup />
                   <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                     {sortedPods.map((pod) => (
                       <tr
                         key={pod.name}
                         tabIndex={0}
                         role="button"
-                        onClick={() => handleOpenPod(pod)}
+                        onClick={() => handleOpenPod(pod, "logs")}
                         onKeyDown={(event) => {
                           if (event.key === "Enter" || event.key === " ") {
                             event.preventDefault();
-                            handleOpenPod(pod);
+                            handleOpenPod(pod, "logs");
                           }
                         }}
                         className="cursor-pointer hover:bg-slate-50 focus:bg-sky-50 focus:outline-none dark:hover:bg-slate-900 dark:focus:bg-sky-950"
                       >
-                        <td className="w-2/5 truncate px-4 py-3 font-medium text-slate-950 dark:text-slate-100" title={pod.name}>
+                        <td className="truncate px-4 py-3 font-medium text-slate-950 dark:text-slate-100" title={pod.name}>
                           {pod.name}
                         </td>
-                        <td className="w-32 px-4 py-3">
+                        <td className="truncate px-2 py-3">
                           <span className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ring-1 ${statusTone(pod.status, pod.detail)}`}>
                             {pod.detail || pod.status}
                           </span>
                         </td>
-                        <td className="w-24 px-4 py-3 text-slate-700 dark:text-slate-300">{pod.ready}</td>
-                        <td className="w-24 px-4 py-3 text-slate-700 dark:text-slate-300">{pod.restarts}</td>
-                        <td className="w-24 px-4 py-3 text-slate-700 dark:text-slate-300">{formatAge(pod.age)}</td>
-                        <td className="w-1/4 px-4 py-3">
+                        <td className="truncate px-2 py-3 text-slate-700 dark:text-slate-300">{pod.ready}</td>
+                        <td className="truncate px-2 py-3 text-slate-700 dark:text-slate-300">{pod.restarts}</td>
+                        <td className="truncate px-2 py-3 text-slate-700 dark:text-slate-300">{formatAge(pod.age)}</td>
+                        <td className="truncate px-2 py-3">
                           <NodePill nodeName={pod.node} tone={nodeToneByName.get(pod.node)} />
+                        </td>
+                        <td className="py-2 pl-1 pr-2">
+                          <PodActionMenu pod={pod} onOpen={handleOpenPod} />
                         </td>
                       </tr>
                     ))}
@@ -1866,7 +2125,21 @@ export default function App() {
             </div>
           )}
         </div>
-      </section>
+        </section>
+
+        {openPodTabs.map((tab) => (
+          <div key={tab.id} className={activeWorkspaceTab === tab.id ? "h-full min-h-0" : "hidden"}>
+            <PodDetailsView
+              pod={tab.pod}
+              context={tab.context}
+              namespace={tab.namespace}
+              nodeTone={tab.nodeTone}
+              effectiveTheme={effectiveTheme}
+              action={tab.action}
+            />
+          </div>
+        ))}
+      </div>
 
     </main>
   );

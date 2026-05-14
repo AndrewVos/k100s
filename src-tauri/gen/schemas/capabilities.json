@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default permissions for app windows","local":true,"windows":["main","pod-*"],"permissions":["core:default","core:webview:allow-create-webview-window","core:window:allow-close","core:window:allow-set-focus","core:window:allow-show"]}}
+{"default":{"identifier":"default","description":"Default permissions for the main window","local":true,"windows":["main"],"permissions":["core:default"]}}
