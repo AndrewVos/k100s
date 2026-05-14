@@ -86,6 +86,10 @@ const SELECTED_NAMESPACE_KEY = "k100s.selectedNamespace";
 const THEME_KEY = "k100s.theme";
 const THEME_OPTIONS = ["system", "light", "dark"];
 
+function namespaceStorageKey(context) {
+  return `${SELECTED_NAMESPACE_KEY}.${context}`;
+}
+
 function getStoredTheme() {
   const storedTheme = window.localStorage.getItem(THEME_KEY);
   return THEME_OPTIONS.includes(storedTheme) ? storedTheme : "system";
@@ -839,6 +843,7 @@ export default function App() {
   const [contexts, setContexts] = useState([]);
   const [context, setContext] = useState("");
   const [namespaces, setNamespaces] = useState([]);
+  const [namespacesContext, setNamespacesContext] = useState("");
   const [namespace, setNamespace] = useState("");
   const [pods, setPods] = useState([]);
   const [loading, setLoading] = useState({ contexts: true, namespaces: false, pods: false });
@@ -913,6 +918,13 @@ export default function App() {
     }));
   }
 
+  function changeNamespace(nextNamespace) {
+    setNamespace(nextNamespace);
+    if (context && namespacesContext === context && nextNamespace) {
+      window.localStorage.setItem(namespaceStorageKey(context), nextNamespace);
+    }
+  }
+
   function clearError() {
     setError("");
     setErrorSource("");
@@ -951,6 +963,7 @@ export default function App() {
     clearError();
     setPods([]);
     setNamespaces([]);
+    setNamespacesContext("");
     setNamespace("");
     setLoading((current) => ({ ...current, namespaces: true }));
 
@@ -958,16 +971,20 @@ export default function App() {
       const result = await api.getNamespaces(nextContext);
       if (requestId !== namespacesRequestRef.current) return;
 
-      const storedNamespace = window.localStorage.getItem(`${SELECTED_NAMESPACE_KEY}.${nextContext}`);
-
-      setNamespaces(result);
-      setNamespace(
+      const storedNamespace = window.localStorage.getItem(namespaceStorageKey(nextContext));
+      const nextNamespace =
         storedNamespace && result.includes(storedNamespace)
           ? storedNamespace
           : selectedContext?.namespace && result.includes(selectedContext.namespace)
           ? selectedContext.namespace
-          : result[0] || ""
-      );
+          : result[0] || "";
+
+      setNamespaces(result);
+      setNamespacesContext(nextContext);
+      setNamespace(nextNamespace);
+      if (nextNamespace) {
+        window.localStorage.setItem(namespaceStorageKey(nextContext), nextNamespace);
+      }
     } catch (cause) {
       if (requestId !== namespacesRequestRef.current) return;
 
@@ -1025,9 +1042,11 @@ export default function App() {
 
   useEffect(() => {
     if (context && namespace) {
-      window.localStorage.setItem(`${SELECTED_NAMESPACE_KEY}.${context}`, namespace);
+      if (namespacesContext === context && namespaces.includes(namespace)) {
+        window.localStorage.setItem(namespaceStorageKey(context), namespace);
+      }
     }
-  }, [context, namespace]);
+  }, [context, namespace, namespaces, namespacesContext]);
 
   useEffect(() => {
     loadNamespaces(context);
@@ -1115,7 +1134,7 @@ export default function App() {
           <SelectField
             label="Namespace"
             value={namespace}
-            onChange={setNamespace}
+            onChange={changeNamespace}
             disabled={!context || loading.namespaces || namespaces.length === 0}
           >
             {namespaces.length === 0 ? <option value="">No namespaces found</option> : null}
