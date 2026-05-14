@@ -200,6 +200,10 @@ function namespaceStorageKey(context) {
   return `${SELECTED_NAMESPACE_KEY}.${context}`;
 }
 
+function namespaceTabKey(context, namespace) {
+  return context && namespace ? `${context}:${namespace}` : "";
+}
+
 const POD_ACTIONS = {
   logs: { label: "Logs", Icon: ScrollText },
   shell: { label: "Shell", Icon: SquareTerminal },
@@ -1560,7 +1564,8 @@ export default function App() {
   const [lastUpdated, setLastUpdated] = useState("");
   const [podSort, setPodSort] = useState({ key: "name", direction: "asc" });
   const [activeWorkspaceTab, setActiveWorkspaceTab] = useState("pods");
-  const [openPodTabs, setOpenPodTabs] = useState([]);
+  const [podTabsByNamespace, setPodTabsByNamespace] = useState({});
+  const [activeWorkspaceTabByNamespace, setActiveWorkspaceTabByNamespace] = useState({});
   const [searchTabId, setSearchTabId] = useState("");
   const [searchQueriesByTab, setSearchQueriesByTab] = useState({});
   const namespacesRequestRef = useRef(0);
@@ -1570,6 +1575,7 @@ export default function App() {
   const activePodsRequestIdRef = useRef("");
   const podsRequestInFlightRef = useRef(0);
   const searchInputRef = useRef(null);
+  const lastRestoredNamespaceTabKeyRef = useRef("");
   const searchOpenForActiveTab = searchTabId === activeWorkspaceTab;
   const activeSearchQuery = searchOpenForActiveTab ? searchQueriesByTab[activeWorkspaceTab] || "" : "";
 
@@ -1581,7 +1587,16 @@ export default function App() {
     () => [...contexts].sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true })),
     [contexts]
   );
+  const activeNamespaceTabKey = namespaceTabKey(context, namespace);
+  const openPodTabs = useMemo(
+    () => (activeNamespaceTabKey ? podTabsByNamespace[activeNamespaceTabKey] || [] : []),
+    [activeNamespaceTabKey, podTabsByNamespace]
+  );
+  const mountedPodTabs = useMemo(() => Object.values(podTabsByNamespace).flat(), [podTabsByNamespace]);
   const workspaceTabIds = useMemo(() => ["pods", ...openPodTabs.map((tab) => tab.id)], [openPodTabs]);
+  const workspaceTabsSignature = useMemo(() => workspaceTabIds.join("\n"), [workspaceTabIds]);
+  const rememberedWorkspaceTab = activeNamespaceTabKey ? activeWorkspaceTabByNamespace[activeNamespaceTabKey] || "" : "";
+  const activeWorkspaceTabIsOpen = workspaceTabIds.includes(activeWorkspaceTab);
   const nodeToneByName = useMemo(() => {
     const nodeNames = [...new Set(pods.map((pod) => pod.node).filter(Boolean))].sort((left, right) =>
       left.localeCompare(right)
@@ -1680,6 +1695,7 @@ export default function App() {
     if (!pod || !context || !namespace) return;
 
     const podAction = POD_ACTIONS[action] ? action : "logs";
+    const tabKey = namespaceTabKey(context, namespace);
     const tab = {
       id: podTabId(context, namespace, pod.name, podAction),
       action: podAction,
@@ -1689,18 +1705,29 @@ export default function App() {
       pod
     };
 
-    setOpenPodTabs((current) => {
-      if (current.some((item) => item.id === tab.id)) return current;
-      return [...current, tab];
+    setPodTabsByNamespace((current) => {
+      const currentTabs = current[tabKey] || [];
+      if (currentTabs.some((item) => item.id === tab.id)) return current;
+
+      return {
+        ...current,
+        [tabKey]: [...currentTabs, tab]
+      };
     });
+    setActiveWorkspaceTabByNamespace((current) => ({ ...current, [tabKey]: tab.id }));
     setActiveWorkspaceTab(tab.id);
   }
 
   function closePodTab(tabId) {
+    const tabKey = activeNamespaceTabKey;
     const tabIndex = workspaceTabIds.indexOf(tabId);
     const fallbackTabId = workspaceTabIds[tabIndex - 1] || "pods";
 
-    setOpenPodTabs((current) => current.filter((tab) => tab.id !== tabId));
+    setPodTabsByNamespace((current) => ({
+      ...current,
+      [tabKey]: (current[tabKey] || []).filter((tab) => tab.id !== tabId)
+    }));
+    setActiveWorkspaceTabByNamespace((current) => ({ ...current, [tabKey]: fallbackTabId }));
     setActiveWorkspaceTab((current) => (current === tabId ? fallbackTabId : current));
     setSearchTabId((current) => (current === tabId ? "" : current));
   }
@@ -1950,6 +1977,30 @@ export default function App() {
 
     return () => window.clearInterval(interval);
   }, [context, namespace]);
+
+  useLayoutEffect(() => {
+    const namespaceChanged = lastRestoredNamespaceTabKeyRef.current !== activeNamespaceTabKey;
+    const nextTab = rememberedWorkspaceTab && workspaceTabIds.includes(rememberedWorkspaceTab) ? rememberedWorkspaceTab : "pods";
+
+    lastRestoredNamespaceTabKeyRef.current = activeNamespaceTabKey;
+    setActiveWorkspaceTab((current) => {
+      if (namespaceChanged) return current === nextTab ? current : nextTab;
+      return workspaceTabIds.includes(current) ? current : nextTab;
+    });
+  }, [activeNamespaceTabKey, rememberedWorkspaceTab, workspaceTabsSignature]);
+
+  useEffect(() => {
+    if (!activeNamespaceTabKey || !activeWorkspaceTabIsOpen) return;
+
+    setActiveWorkspaceTabByNamespace((current) =>
+      current[activeNamespaceTabKey] === activeWorkspaceTab
+        ? current
+        : {
+            ...current,
+            [activeNamespaceTabKey]: activeWorkspaceTab
+          }
+    );
+  }, [activeNamespaceTabKey, activeWorkspaceTab, activeWorkspaceTabIsOpen]);
 
   useEffect(() => {
     function handleFindShortcut(event) {
@@ -2244,8 +2295,9 @@ export default function App() {
         </div>
         </section>
 
-        {openPodTabs.map((tab) => {
-          const isActiveTab = activeWorkspaceTab === tab.id;
+        {mountedPodTabs.map((tab) => {
+          const isCurrentNamespaceTab = tab.context === context && tab.namespace === namespace;
+          const isActiveTab = isCurrentNamespaceTab && activeWorkspaceTab === tab.id;
 
           return (
           <div key={tab.id} className={isActiveTab ? "flex h-full min-h-0 flex-col" : "hidden"}>
