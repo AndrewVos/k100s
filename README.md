@@ -8,6 +8,12 @@ A small Tauri desktop app for browsing Kubernetes contexts, namespaces, pods, lo
 brew install --cask andrewvos/tap/k100s
 ```
 
+If macOS says `"k100s" is damaged and can't be opened`, remove the quarantine flag:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/k100s.app
+```
+
 ## Requirements
 
 - [Bun](https://bun.sh/)
