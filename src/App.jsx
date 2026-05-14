@@ -509,29 +509,6 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
     });
   }, [logFilter, logLines]);
 
-  function scrollLogsToBottom() {
-    if (visibleLogLines.length === 0) return;
-
-    window.requestAnimationFrame(() => {
-      logListRef.current?.scrollToIndex({
-        index: visibleLogLines.length - 1,
-        align: "end",
-        behavior: "auto"
-      });
-    });
-  }
-
-  function handleLogAutoScrollChange(checked) {
-    if (bottomStateTimerRef.current) {
-      window.clearTimeout(bottomStateTimerRef.current);
-      bottomStateTimerRef.current = null;
-    }
-
-    setLogAutoScroll(checked);
-    logUserScrollIntentRef.current = !checked;
-    if (checked) scrollLogsToBottom();
-  }
-
   useEffect(() => {
     const podName = pod?.name;
     if (!podName || !context || !namespace) return undefined;
@@ -714,15 +691,6 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
                         className="h-8 w-56 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-sky-500 focus:ring-4 focus:ring-sky-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-sky-400 dark:focus:ring-sky-950"
                         placeholder="Text in logs"
                       />
-                    </label>
-                    <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={logAutoScroll}
-                        onChange={(event) => handleLogAutoScrollChange(event.target.checked)}
-                        className="size-4 cursor-pointer rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-                      />
-                      Autoscroll
                     </label>
                     <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300">
                       <input
