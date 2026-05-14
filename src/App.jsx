@@ -24,7 +24,6 @@ import {
   ArrowUp,
   Boxes,
   ChevronDown,
-  ChevronRight,
   FileText,
   LoaderCircle,
   Search,
@@ -339,7 +338,7 @@ function EmptyState({ title, message, action }) {
 
 function LoadingState() {
   return (
-    <div className="grid min-h-80 place-items-center border-t border-slate-200 bg-white px-6 text-center dark:border-slate-800 dark:bg-slate-950">
+    <div className="grid min-h-0 flex-1 place-items-center border-t border-slate-200 bg-white px-6 text-center dark:border-slate-800 dark:bg-slate-950">
       <LoaderCircle className="size-9 animate-spin text-sky-600" aria-hidden="true" />
     </div>
   );
@@ -540,9 +539,9 @@ function ClusterNamespaceMenu({
         {loadingContexts ? (
           <span className="truncate">Loading clusters...</span>
         ) : context && namespace ? (
-          <span className="flex min-w-0 items-center gap-1.5">
+          <span className="flex min-w-0 items-stretch">
             <span className="min-w-0 truncate">{context}</span>
-            <ChevronRight className="size-3.5 shrink-0 text-slate-400 dark:text-slate-500" aria-hidden="true" />
+            <span className="mx-2 w-px shrink-0 bg-slate-300 dark:bg-slate-700" aria-hidden="true" />
             <span className="min-w-0 truncate">{namespace}</span>
           </span>
         ) : (
