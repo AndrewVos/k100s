@@ -444,6 +444,7 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
   const logListRef = useRef(null);
   const logRemainderRef = useRef("");
   const logStreamIdRef = useRef("");
+  const logUserScrollIntentRef = useRef(false);
   const bottomStateTimerRef = useRef(null);
   const describeRequestRef = useRef(0);
   const deploymentDescribeRequestRef = useRef(0);
@@ -463,14 +464,21 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
     }
 
     if (isAtBottom) {
+      logUserScrollIntentRef.current = false;
       setLogAutoScroll(true);
       return;
     }
+
+    if (!logUserScrollIntentRef.current) return;
 
     bottomStateTimerRef.current = window.setTimeout(() => {
       setLogAutoScroll(false);
       bottomStateTimerRef.current = null;
     }, 350);
+  }
+
+  function markLogUserScrollIntent() {
+    logUserScrollIntentRef.current = true;
   }
 
   function appendLogLines(text, level = "log") {
@@ -520,6 +528,7 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
     }
 
     setLogAutoScroll(checked);
+    logUserScrollIntentRef.current = !checked;
     if (checked) scrollLogsToBottom();
   }
 
@@ -531,6 +540,7 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
     logStreamIdRef.current = id;
     logRemainderRef.current = "";
     logLineIdRef.current = 0;
+    logUserScrollIntentRef.current = false;
     setLogLines([]);
     setLogAutoScroll(true);
     setLogFilter("");
@@ -623,8 +633,8 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
   return (
     <Dialog open={Boolean(pod)} onClose={onClose} className="relative z-50">
       <DialogBackdrop className="fixed inset-0 bg-slate-950/45 dark:bg-black/60" />
-      <div className="fixed inset-0 flex p-6">
-        <DialogPanel className="flex h-full w-full flex-col overflow-hidden rounded-lg bg-white shadow-2xl dark:bg-slate-950">
+      <div className="fixed inset-0 flex">
+        <DialogPanel className="flex h-full w-full flex-col overflow-hidden bg-white dark:bg-slate-950">
           <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 dark:border-slate-800">
             <div className="min-w-0">
               <DialogTitle className="truncate text-lg font-semibold text-slate-950 dark:text-slate-100">
@@ -735,7 +745,12 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
                   </div>
                 </div>
 
-                <div className={`min-h-0 flex-1 bg-white dark:bg-slate-950 ${wrapLogText ? "" : "overflow-x-auto"}`}>
+                <div
+                  className={`min-h-0 flex-1 bg-white dark:bg-slate-950 ${wrapLogText ? "" : "overflow-x-auto"}`}
+                  onPointerDown={markLogUserScrollIntent}
+                  onTouchMove={markLogUserScrollIntent}
+                  onWheel={markLogUserScrollIntent}
+                >
                   <Virtuoso
                     ref={logListRef}
                     data={visibleLogLines}
