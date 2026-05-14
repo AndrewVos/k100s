@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, memo, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Dialog,
   DialogBackdrop,
@@ -15,11 +15,14 @@ import jsonLanguage from "react-syntax-highlighter/dist/esm/languages/prism/json
 import yamlLanguage from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import {
+  layout as layoutText,
+  prepareWithSegments as prepareText
+} from "@chenglou/pretext";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Virtuoso } from "react-virtuoso";
 import { ArrowDown, ArrowLeft, ArrowUp, Boxes, LoaderCircle, Server, Settings, TerminalSquare, X } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
@@ -124,6 +127,65 @@ const api = "__TAURI_INTERNALS__" in window ? tauriApi : fallbackApi;
 const SELECTED_CONTEXT_KEY = "k100s.selectedContext";
 const SELECTED_NAMESPACE_KEY = "k100s.selectedNamespace";
 const THEME_KEY = "k100s.theme";
+const LOG_FONT = "12px Menlo, Monaco, Consolas, monospace";
+const LOG_LINE_HEIGHT = 20;
+const LOG_ROW_VERTICAL_PADDING = 16;
+const LOG_TIMESTAMP_HEADER_HEIGHT = 20;
+const LOG_TIME_GAP_HEIGHT = 34;
+const LOG_SCROLL_OVERSCAN = 600;
+const LOG_CONTENT_HORIZONTAL_PADDING = 32;
+const LOG_FOOTER_HEIGHT = 56;
+const logMeasurementCache = new Map();
+
+function preparedLogText(text) {
+  const value = String(text || " ");
+  const cached = logMeasurementCache.get(value);
+  if (cached) return cached;
+
+  if (logMeasurementCache.size > 10000) {
+    logMeasurementCache.clear();
+  }
+
+  const prepared = prepareText(value, LOG_FONT, { whiteSpace: "pre-wrap" });
+  logMeasurementCache.set(value, prepared);
+  return prepared;
+}
+
+function measureLogMessageHeight(message, width) {
+  try {
+    const contentWidth = Math.max(1, width - LOG_CONTENT_HORIZONTAL_PADDING);
+    const result = layoutText(preparedLogText(message), contentWidth, LOG_LINE_HEIGHT);
+    return Math.max(LOG_LINE_HEIGHT, Math.ceil(result.height));
+  } catch {
+    return LOG_LINE_HEIGHT;
+  }
+}
+
+function formatLogTimeGap(milliseconds) {
+  const totalSeconds = Math.round(milliseconds / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s later`;
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return seconds ? `${minutes}m ${seconds}s later` : `${minutes}m later`;
+
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes ? `${hours}h ${remainingMinutes}m later` : `${hours}h later`;
+}
+
+function lowerBound(values, target) {
+  let low = 0;
+  let high = values.length - 1;
+
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (values[mid] < target) low = mid + 1;
+    else high = mid;
+  }
+
+  return low;
+}
 const THEME_OPTIONS = ["system", "light", "dark"];
 
 function namespaceStorageKey(context) {
@@ -302,17 +364,6 @@ function HighlightedText({ text, filter }) {
   );
 }
 
-function formatJsonMessage(message) {
-  const value = String(message || "").trim();
-  if (!value || !["{", "["].includes(value[0])) return "";
-
-  try {
-    return JSON.stringify(JSON.parse(value), null, 2);
-  } catch {
-    return "";
-  }
-}
-
 function createSyntaxStyle(baseStyle) {
   return {
     ...baseStyle,
@@ -381,57 +432,299 @@ function DescribePanel({ loading, error, text, emptyMessage, failureTitle, synta
   );
 }
 
-function LogMessage({ message, filter, wrap, syntaxStyle }) {
-  const jsonMessage = formatJsonMessage(message);
+const LogMessage = memo(function LogMessage({ message, filter }) {
+  return (
+    <span className="block min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+      <HighlightedText text={message} filter={filter} />
+    </span>
+  );
+});
 
-  if (!jsonMessage) {
+const LogRow = memo(function LogRow({
+  filter,
+  height,
+  line,
+  onMeasure,
+  offset,
+  showTimestamps,
+  timeGapLabel,
+  width
+}) {
+  const contentRef = useRef(null);
+
+  useLayoutEffect(() => {
+    const element = contentRef.current;
+    if (!element) return undefined;
+
+    function measure() {
+      onMeasure(line.id, element.offsetHeight);
+    }
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+
+    return () => observer.disconnect();
+  }, [line.id, onMeasure]);
+
+  return (
+    <div
+      className="absolute left-0 top-0"
+      style={{
+        height,
+        transform: `translateY(${offset}px)`,
+        width
+      }}
+    >
+      <div
+        ref={contentRef}
+        className={`min-w-0 border-b border-slate-100 px-4 py-2 font-mono text-xs leading-5 dark:border-slate-900 ${
+          line.level === "error"
+            ? "bg-rose-50 text-rose-800 dark:bg-rose-950 dark:text-rose-200"
+            : line.level === "meta"
+              ? "text-slate-500 dark:text-slate-400"
+              : "text-slate-800 dark:text-slate-200"
+        }`}
+      >
+        {timeGapLabel ? (
+          <div className="mb-3 flex items-center gap-3 font-sans text-[11px] font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">
+            <span className="h-px flex-1 bg-sky-200 dark:bg-sky-900" />
+            <span className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 shadow-sm dark:border-sky-800 dark:bg-sky-950">
+              {timeGapLabel}
+            </span>
+            <span className="h-px flex-1 bg-sky-200 dark:bg-sky-900" />
+          </div>
+        ) : null}
+        {showTimestamps && line.timestamp ? (
+          <div className="mb-1 text-[11px] font-semibold leading-4 text-slate-500 dark:text-slate-400">
+            <HighlightedText text={line.timestamp} filter={filter} />
+          </div>
+        ) : null}
+        <LogMessage message={line.message} filter={filter} />
+      </div>
+    </div>
+  );
+});
+
+const LogScrollArea = memo(forwardRef(function LogScrollArea(
+  {
+    lines,
+    totalLineCount,
+    filter,
+    showTimestamps,
+    autoScroll,
+    onBottomStateChange,
+    onUserScrollIntent
+  },
+  ref
+) {
+  const scrollRef = useRef(null);
+  const [viewport, setViewport] = useState({ width: 1000, height: 600 });
+  const [scrollTop, setScrollTop] = useState(0);
+  const [measuredHeights, setMeasuredHeights] = useState(() => new Map());
+
+  const handleRowMeasure = useMemo(
+    () => (id, height) => {
+      setMeasuredHeights((current) => {
+        if (Math.abs((current.get(id) || 0) - height) <= 1) return current;
+
+        const next = new Map(current);
+        next.set(id, height);
+        return next;
+      });
+    },
+    []
+  );
+
+  const metrics = useMemo(() => {
+    const offsets = [0];
+    const heights = [];
+    const timeGapLabels = [];
+    let previousTimestampMs = null;
+
+    for (const line of lines) {
+      const timestampMs = line.timestamp ? Date.parse(line.timestamp) : Number.NaN;
+      const timeGapMs =
+        Number.isFinite(timestampMs) && Number.isFinite(previousTimestampMs)
+          ? timestampMs - previousTimestampMs
+          : 0;
+      const timeGapLabel = timeGapMs > 10000 ? formatLogTimeGap(timeGapMs) : "";
+      const timeGapHeight = timeGapLabel ? LOG_TIME_GAP_HEIGHT : 0;
+      const timestampHeight = showTimestamps && line.timestamp ? LOG_TIMESTAMP_HEADER_HEIGHT : 0;
+      const messageHeight = measureLogMessageHeight(line.message, viewport.width);
+      const estimatedHeight = LOG_ROW_VERTICAL_PADDING + timeGapHeight + timestampHeight + messageHeight;
+      const height = measuredHeights.get(line.id) || estimatedHeight;
+
+      heights.push(height);
+      timeGapLabels.push(timeGapLabel);
+      offsets.push(offsets[offsets.length - 1] + height);
+
+      if (Number.isFinite(timestampMs)) previousTimestampMs = timestampMs;
+    }
+
+    const rowsHeight = offsets[offsets.length - 1] || 0;
+    const footerHeight = totalLineCount > 0 ? LOG_FOOTER_HEIGHT : 0;
+
+    return {
+      footerHeight,
+      heights,
+      offsets,
+      rowsHeight,
+      timeGapLabels,
+      totalHeight: rowsHeight + footerHeight
+    };
+  }, [lines, measuredHeights, showTimestamps, totalLineCount, viewport.width]);
+
+  useEffect(() => {
+    setMeasuredHeights((current) => {
+      if (current.size === 0) return current;
+
+      const liveIds = new Set(lines.map((line) => line.id));
+      let changed = false;
+      const next = new Map();
+
+      for (const [id, height] of current) {
+        if (liveIds.has(id)) {
+          next.set(id, height);
+        } else {
+          changed = true;
+        }
+      }
+
+      return changed ? next : current;
+    });
+  }, [lines]);
+
+  const visibleRange = useMemo(() => {
+    if (lines.length === 0) return { start: 0, end: 0 };
+    if (viewport.height === 0) {
+      const end = autoScroll ? lines.length : Math.min(lines.length, 200);
+      return { start: Math.max(0, end - 200), end };
+    }
+
+    const start = Math.max(0, lowerBound(metrics.offsets, scrollTop - LOG_SCROLL_OVERSCAN) - 1);
+    const end = Math.min(
+      lines.length,
+      lowerBound(metrics.offsets, scrollTop + viewport.height + LOG_SCROLL_OVERSCAN) + 1
+    );
+
+    return { start, end };
+  }, [lines.length, metrics.offsets, scrollTop, viewport.height]);
+
+  useImperativeHandle(ref, () => ({
+    scrollToIndex({ index, align = "end" }) {
+      const element = scrollRef.current;
+      if (!element || lines.length === 0) return;
+
+      const safeIndex = Math.max(0, Math.min(index, lines.length - 1));
+      const top = metrics.offsets[safeIndex] || 0;
+      const bottom = metrics.offsets[safeIndex + 1] || top;
+      const targetBottom = align === "end" && safeIndex === lines.length - 1 ? metrics.totalHeight : bottom;
+      element.scrollTop = align === "end" ? Math.max(0, targetBottom - element.clientHeight) : top;
+      setScrollTop(element.scrollTop);
+    }
+  }), [lines.length, metrics.offsets, metrics.totalHeight]);
+
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return undefined;
+
+    function syncViewport() {
+      setViewport({
+        width: element.clientWidth,
+        height: element.clientHeight
+      });
+    }
+
+    const observer = new ResizeObserver(syncViewport);
+    observer.observe(element);
+    syncViewport();
+
+    return () => observer.disconnect();
+  }, []);
+
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element || !autoScroll) return;
+
+    element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    setScrollTop(element.scrollTop);
+  }, [autoScroll, metrics.totalHeight]);
+
+  function handleScroll(event) {
+    const element = event.currentTarget;
+    setScrollTop(element.scrollTop);
+    onBottomStateChange?.(element.scrollHeight - element.scrollTop - element.clientHeight <= 80);
+  }
+
+  if (lines.length === 0) {
     return (
-      <span>
-        <HighlightedText text={message} filter={filter} />
-      </span>
+      <div className="grid min-h-0 flex-1 place-items-center bg-white px-4 text-sm text-slate-500 dark:bg-slate-950">
+        Waiting for log output...
+      </div>
     );
   }
 
-  if (filter.trim()) {
-    return (
-      <span className={wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"}>
-        <HighlightedText text={jsonMessage} filter={filter} />
-      </span>
+  const visibleItems = [];
+  for (let index = visibleRange.start; index < visibleRange.end; index += 1) {
+    const line = lines[index];
+    if (!line) continue;
+
+    visibleItems.push(
+      <LogRow
+        key={line.id}
+        filter={filter}
+        height={metrics.heights[index]}
+        line={line}
+        offset={metrics.offsets[index]}
+        onMeasure={handleRowMeasure}
+        showTimestamps={showTimestamps}
+        timeGapLabel={metrics.timeGapLabels[index]}
+        width="100%"
+      />
     );
   }
 
   return (
-    <SyntaxHighlighter
-      language="json"
-      style={syntaxStyle}
-      customStyle={{
-        background: "transparent",
-        margin: 0,
-        padding: 0,
-        whiteSpace: wrap ? "pre-wrap" : "pre",
-        overflow: "visible"
-      }}
-      codeTagProps={{
-        style: {
-          background: "transparent",
-          fontFamily: "inherit",
-          fontSize: "inherit",
-          lineHeight: "inherit",
-          whiteSpace: wrap ? "pre-wrap" : "pre"
-        }
-      }}
+    <div
+      ref={scrollRef}
+      className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-white dark:bg-slate-950"
+      onPointerDown={onUserScrollIntent}
+      onTouchMove={onUserScrollIntent}
+      onWheel={onUserScrollIntent}
+      onScroll={handleScroll}
     >
-      {jsonMessage}
-    </SyntaxHighlighter>
+      <div
+        className="relative"
+        style={{
+          height: metrics.totalHeight,
+          minWidth: "100%",
+          width: "100%"
+        }}
+      >
+        {visibleItems}
+        {totalLineCount > 0 ? (
+          <div
+            className="absolute left-0 flex w-full items-center gap-3 px-4 py-4 font-sans text-[11px] font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300"
+            style={{ height: metrics.footerHeight, top: metrics.rowsHeight }}
+          >
+            <span className="h-px flex-1 bg-slate-300 dark:bg-slate-700" />
+            <span className="rounded-full border border-slate-300 bg-slate-100 px-3 py-1.5 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+              {filter ? `${lines.length} matching lines` : "End of logs"}
+            </span>
+            <span className="h-px flex-1 bg-slate-300 dark:bg-slate-700" />
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
-}
+}));
 
 function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, onClose }) {
   const detailTabs = ["Logs", "Pod", "Deployment", "Shell"];
   const [logLines, setLogLines] = useState([]);
   const [logAutoScroll, setLogAutoScroll] = useState(true);
   const [showTimestamps, setShowTimestamps] = useState(true);
-  const [wrapLogText, setWrapLogText] = useState(true);
   const [logFilter, setLogFilter] = useState("");
   const [selectedTabIndex, setSelectedTabIndex] = useState(0);
   const [describeText, setDescribeText] = useState("");
@@ -733,70 +1026,19 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
                       />
                       Show timestamps
                     </label>
-                    <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={wrapLogText}
-                        onChange={(event) => setWrapLogText(event.target.checked)}
-                        className="size-4 cursor-pointer rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-                      />
-                      Wrap text
-                    </label>
                   </div>
                 </div>
 
-                <div
-                  className={`min-h-0 flex-1 bg-white dark:bg-slate-950 ${wrapLogText ? "" : "overflow-x-auto"}`}
-                  onPointerDown={markLogUserScrollIntent}
-                  onTouchMove={markLogUserScrollIntent}
-                  onWheel={markLogUserScrollIntent}
-                >
-                  <Virtuoso
-                    ref={logListRef}
-                    data={visibleLogLines}
-                    followOutput={logAutoScroll ? "auto" : false}
-                    atBottomThreshold={80}
-                    atBottomStateChange={handleLogBottomStateChange}
-                    itemContent={(_index, line) => (
-                      <div
-                        className={`flex gap-3 px-4 py-0.5 font-mono text-xs leading-5 ${
-                          wrapLogText ? "whitespace-pre-wrap break-words" : "w-max whitespace-pre"
-                        } ${
-                          line.level === "error"
-                            ? "bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
-                            : line.level === "meta"
-                              ? "text-slate-500 dark:text-slate-400"
-                              : "text-slate-800 dark:text-slate-200"
-                        }`}
-                      >
-                        {showTimestamps && line.timestamp ? (
-                          <span className="shrink-0 text-slate-500 dark:text-slate-400">
-                            <HighlightedText text={line.timestamp} filter={logFilter} />
-                          </span>
-                        ) : null}
-                        <LogMessage
-                          message={line.message}
-                          filter={logFilter}
-                          wrap={wrapLogText}
-                          syntaxStyle={syntaxStyle}
-                        />
-                      </div>
-                    )}
-                    components={{
-                      EmptyPlaceholder: () => (
-                        <div className="grid h-full place-items-center px-4 text-sm text-slate-500">
-                          Waiting for log output...
-                        </div>
-                      ),
-                      Footer: () =>
-                        logLines.length > 0 ? (
-                          <div className="px-4 py-3 text-center font-mono text-[11px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
-                            {logFilter ? `${visibleLogLines.length} matching lines` : "End of logs"}
-                          </div>
-                        ) : null
-                    }}
-                  />
-                </div>
+                <LogScrollArea
+                  ref={logListRef}
+                  lines={visibleLogLines}
+                  totalLineCount={logLines.length}
+                  filter={logFilter}
+                  showTimestamps={showTimestamps}
+                  autoScroll={logAutoScroll}
+                  onBottomStateChange={handleLogBottomStateChange}
+                  onUserScrollIntent={markLogUserScrollIntent}
+                />
               </TabPanel>
               <TabPanel className="h-full min-h-0 bg-white dark:bg-slate-950">
                 <DescribePanel
