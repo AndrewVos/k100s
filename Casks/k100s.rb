@@ -1,6 +1,6 @@
 cask "k100s" do
-  version "0.1.1"
-  sha256 "726d0ed5c7cf7a7ca7355f19295440e031196cefd7ae2238f60aace4f85ef43e"
+  version "0.1.2"
+  sha256 "3925812d8cdadaa709f055349afb0ff03751e46d177581d11342343c2fe23b97"
 
   url "https://github.com/AndrewVos/k100s/releases/download/v#{version}/k100s-#{version}-mac.dmg",
       verified: "github.com/AndrewVos/k100s/"
