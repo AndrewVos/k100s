@@ -184,13 +184,14 @@ function SelectField({ label, value, onChange, disabled, children }) {
   );
 }
 
-function EmptyState({ title, message }) {
+function EmptyState({ title, message, action }) {
   return (
     <div className="grid min-h-80 place-items-center border-t border-slate-200 bg-white px-6 text-center dark:border-slate-800 dark:bg-slate-950">
       <div>
         <Boxes className="mx-auto mb-3 size-9 text-slate-400" aria-hidden="true" />
         <h2 className="text-base font-semibold text-slate-950 dark:text-slate-100">{title}</h2>
         <p className="mt-1 max-w-md text-sm text-slate-600 dark:text-slate-400">{message}</p>
+        {action ? <div className="mt-4">{action}</div> : null}
       </div>
     </div>
   );
@@ -842,6 +843,7 @@ export default function App() {
   const [pods, setPods] = useState([]);
   const [loading, setLoading] = useState({ contexts: true, namespaces: false, pods: false });
   const [error, setError] = useState("");
+  const [errorSource, setErrorSource] = useState("");
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdated, setLastUpdated] = useState("");
   const [selectedPodName, setSelectedPodName] = useState("");
@@ -911,8 +913,18 @@ export default function App() {
     }));
   }
 
-  async function loadContexts() {
+  function clearError() {
     setError("");
+    setErrorSource("");
+  }
+
+  function showError(message, source) {
+    setError(message);
+    setErrorSource(source);
+  }
+
+  async function loadContexts() {
+    clearError();
     setLoading((current) => ({ ...current, contexts: true }));
 
     try {
@@ -925,7 +937,7 @@ export default function App() {
       setContexts(result.contexts);
       setContext(nextContext);
     } catch (cause) {
-      setError(cause.message || "Unable to read kubectl contexts.");
+      showError(cause.message || "Unable to read kubectl contexts.", "contexts");
     } finally {
       setLoading((current) => ({ ...current, contexts: false }));
     }
@@ -936,7 +948,7 @@ export default function App() {
 
     const requestId = namespacesRequestRef.current + 1;
     namespacesRequestRef.current = requestId;
-    setError("");
+    clearError();
     setPods([]);
     setNamespaces([]);
     setNamespace("");
@@ -959,7 +971,7 @@ export default function App() {
     } catch (cause) {
       if (requestId !== namespacesRequestRef.current) return;
 
-      setError(cause.message || "Unable to read namespaces.");
+      showError(cause.message || "Unable to read namespaces.", "namespaces");
     } finally {
       if (requestId === namespacesRequestRef.current) {
         setLoading((current) => ({ ...current, namespaces: false }));
@@ -977,7 +989,7 @@ export default function App() {
     podsRequestRef.current = requestId;
     podsRequestInFlightRef.current = requestId;
 
-    setError("");
+    clearError();
     if (showLoading) {
       setLoading((current) => ({ ...current, pods: true }));
     }
@@ -991,7 +1003,7 @@ export default function App() {
     } catch (cause) {
       if (requestId !== podsRequestRef.current) return;
 
-      setError(cause.message || "Unable to read pods.");
+      showError(cause.message || "Unable to read pods.", "pods");
       setPods([]);
     } finally {
       if (podsRequestInFlightRef.current === requestId) {
@@ -1036,6 +1048,7 @@ export default function App() {
   }, [autoRefresh, context, namespace]);
 
   const isBusy = loading.contexts || loading.namespaces || loading.pods;
+  const canRetryNamespaces = errorSource === "namespaces" && context;
 
   useEffect(() => {
     window.localStorage.setItem(THEME_KEY, theme);
@@ -1157,7 +1170,22 @@ export default function App() {
           {!context ? (
             <EmptyState title="No cluster selected" message="Make sure kubectl is installed and has configured contexts." />
           ) : error ? (
-            <EmptyState title="Connection failed" message={error} />
+            <EmptyState
+              title="Connection failed"
+              message={error}
+              action={
+                canRetryNamespaces ? (
+                  <button
+                    type="button"
+                    onClick={() => loadNamespaces(context)}
+                    disabled={loading.namespaces}
+                    className="inline-flex h-9 cursor-pointer items-center rounded-md bg-sky-600 px-4 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600 dark:disabled:bg-slate-800 dark:disabled:text-slate-500"
+                  >
+                    {loading.namespaces ? "Retrying..." : "Retry"}
+                  </button>
+                ) : null
+              }
+            />
           ) : loading.namespaces || (loading.pods && pods.length === 0) ? (
             <LoadingState />
           ) : pods.length === 0 && !loading.pods ? (
