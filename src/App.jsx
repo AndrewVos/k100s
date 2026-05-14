@@ -1709,6 +1709,15 @@ export default function App() {
   }
 
   function changeNamespace(nextNamespace) {
+    if (nextNamespace !== namespace) {
+      cancelKubectlRequest(activePodsRequestIdRef.current);
+      activePodsRequestIdRef.current = "";
+      podsRequestRef.current += 1;
+      podsRequestInFlightRef.current = 0;
+      setPods([]);
+      setLoading((current) => ({ ...current, pods: Boolean(nextNamespace) }));
+    }
+
     setNamespace(nextNamespace);
     if (context && namespacesContext === context && nextNamespace) {
       window.localStorage.setItem(namespaceStorageKey(context), nextNamespace);
