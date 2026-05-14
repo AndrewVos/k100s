@@ -2054,12 +2054,12 @@ export default function App() {
           </div>
         </div>
 
-        <div className="px-6 pt-2">
+        <div className="px-2 py-1">
           <div className="flex gap-1 overflow-x-auto">
             <button
               type="button"
               onClick={() => setActiveWorkspaceTab("pods")}
-              className={`inline-flex shrink-0 cursor-pointer items-center gap-2 rounded-t-md border border-b-0 px-4 py-2 text-sm font-medium outline-none transition ${
+              className={`inline-flex shrink-0 cursor-pointer items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium outline-none transition ${
                 activeWorkspaceTab === "pods"
                   ? "border-slate-200 bg-white text-slate-950 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-100"
                   : "border-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-100"
@@ -2073,7 +2073,7 @@ export default function App() {
                 key={tab.id}
                 type="button"
                 onClick={() => setActiveWorkspaceTab(tab.id)}
-                className={`flex max-w-64 shrink-0 cursor-pointer items-center gap-2 rounded-t-md border border-b-0 px-3 py-2 text-sm font-medium outline-none transition ${
+                className={`flex max-w-64 shrink-0 cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium outline-none transition ${
                   activeWorkspaceTab === tab.id
                     ? "border-slate-200 bg-white text-slate-950 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-100"
                     : "border-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-100"
