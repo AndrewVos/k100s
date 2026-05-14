@@ -2259,11 +2259,11 @@ export default function App() {
         })}
       </div>
 
-      <footer className="flex shrink-0 flex-wrap items-center gap-1.5 border-t border-slate-200 bg-white px-3 py-1 dark:border-slate-800 dark:bg-slate-950">
-        <div className={`flex h-5 items-center rounded border px-1.5 text-[11px] font-medium ${podSummary.tone}`}>
+      <footer className="flex shrink-0 flex-wrap items-center gap-1.5 border-t border-slate-300 bg-slate-100 px-3 py-1 text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
+        <div className="flex h-5 items-center rounded border border-slate-300 bg-slate-200 px-1.5 text-[11px] font-medium dark:border-slate-700 dark:bg-slate-800">
           {podSummary.health}
         </div>
-        <div className={`flex h-5 items-center rounded border px-1.5 text-[11px] font-medium ${podSummary.tone}`}>
+        <div className="flex h-5 items-center rounded border border-slate-300 bg-slate-200 px-1.5 text-[11px] font-medium dark:border-slate-700 dark:bg-slate-800">
           {podSummary.readyPercentage}% ready
         </div>
       </footer>
