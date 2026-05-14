@@ -446,7 +446,6 @@ const LogRow = memo(function LogRow({
   line,
   onMeasure,
   offset,
-  showTimestamps,
   timeGapLabel,
   width
 }) {
@@ -495,7 +494,7 @@ const LogRow = memo(function LogRow({
             <span className="h-px flex-1 bg-sky-200 dark:bg-sky-900" />
           </div>
         ) : null}
-        {showTimestamps && line.timestamp ? (
+        {line.timestamp ? (
           <div className="mb-1 text-[11px] font-semibold leading-4 text-slate-500 dark:text-slate-400">
             <HighlightedText text={line.timestamp} filter={filter} />
           </div>
@@ -511,7 +510,6 @@ const LogScrollArea = memo(forwardRef(function LogScrollArea(
     lines,
     totalLineCount,
     filter,
-    showTimestamps,
     autoScroll,
     onBottomStateChange,
     onUserScrollIntent
@@ -550,7 +548,7 @@ const LogScrollArea = memo(forwardRef(function LogScrollArea(
           : 0;
       const timeGapLabel = timeGapMs > 10000 ? formatLogTimeGap(timeGapMs) : "";
       const timeGapHeight = timeGapLabel ? LOG_TIME_GAP_HEIGHT : 0;
-      const timestampHeight = showTimestamps && line.timestamp ? LOG_TIMESTAMP_HEADER_HEIGHT : 0;
+      const timestampHeight = line.timestamp ? LOG_TIMESTAMP_HEADER_HEIGHT : 0;
       const messageHeight = measureLogMessageHeight(line.message, viewport.width);
       const estimatedHeight = LOG_ROW_VERTICAL_PADDING + timeGapHeight + timestampHeight + messageHeight;
       const height = measuredHeights.get(line.id) || estimatedHeight;
@@ -573,7 +571,7 @@ const LogScrollArea = memo(forwardRef(function LogScrollArea(
       timeGapLabels,
       totalHeight: rowsHeight + footerHeight
     };
-  }, [lines, measuredHeights, showTimestamps, totalLineCount, viewport.width]);
+  }, [lines, measuredHeights, totalLineCount, viewport.width]);
 
   useEffect(() => {
     setMeasuredHeights((current) => {
@@ -659,7 +657,7 @@ const LogScrollArea = memo(forwardRef(function LogScrollArea(
 
   if (lines.length === 0) {
     return (
-      <div className="grid min-h-0 flex-1 place-items-center bg-white px-4 text-sm text-slate-500 dark:bg-slate-950">
+      <div className="grid h-full min-h-0 place-items-center bg-white px-4 text-sm text-slate-500 dark:bg-slate-950">
         Waiting for log output...
       </div>
     );
@@ -678,7 +676,6 @@ const LogScrollArea = memo(forwardRef(function LogScrollArea(
         line={line}
         offset={metrics.offsets[index]}
         onMeasure={handleRowMeasure}
-        showTimestamps={showTimestamps}
         timeGapLabel={metrics.timeGapLabels[index]}
         width="100%"
       />
@@ -688,7 +685,7 @@ const LogScrollArea = memo(forwardRef(function LogScrollArea(
   return (
     <div
       ref={scrollRef}
-      className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-white dark:bg-slate-950"
+      className="h-full min-h-0 overflow-y-auto overflow-x-hidden bg-white dark:bg-slate-950"
       onPointerDown={onUserScrollIntent}
       onTouchMove={onUserScrollIntent}
       onWheel={onUserScrollIntent}
@@ -724,7 +721,6 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
   const detailTabs = ["Logs", "Pod", "Deployment", "Shell"];
   const [logLines, setLogLines] = useState([]);
   const [logAutoScroll, setLogAutoScroll] = useState(true);
-  const [showTimestamps, setShowTimestamps] = useState(true);
   const [logFilter, setLogFilter] = useState("");
   const [selectedTabIndex, setSelectedTabIndex] = useState(0);
   const [describeText, setDescribeText] = useState("");
@@ -814,15 +810,15 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
     });
   }
 
-  function handleLogAutoScrollChange(checked) {
+  function jumpToLogBottom() {
     if (bottomStateTimerRef.current) {
       window.clearTimeout(bottomStateTimerRef.current);
       bottomStateTimerRef.current = null;
     }
 
-    setLogAutoScroll(checked);
-    logUserScrollIntentRef.current = !checked;
-    if (checked) scrollLogsToBottom();
+    logUserScrollIntentRef.current = false;
+    setLogAutoScroll(true);
+    scrollLogsToBottom();
   }
 
   useEffect(() => {
@@ -1008,37 +1004,30 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
                         placeholder="Text in logs"
                       />
                     </label>
-                    <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={logAutoScroll}
-                        onChange={(event) => handleLogAutoScrollChange(event.target.checked)}
-                        className="size-4 cursor-pointer rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-                      />
-                      Autoscroll
-                    </label>
-                    <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={showTimestamps}
-                        onChange={(event) => setShowTimestamps(event.target.checked)}
-                        className="size-4 cursor-pointer rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-                      />
-                      Show timestamps
-                    </label>
                   </div>
                 </div>
 
-                <LogScrollArea
-                  ref={logListRef}
-                  lines={visibleLogLines}
-                  totalLineCount={logLines.length}
-                  filter={logFilter}
-                  showTimestamps={showTimestamps}
-                  autoScroll={logAutoScroll}
-                  onBottomStateChange={handleLogBottomStateChange}
-                  onUserScrollIntent={markLogUserScrollIntent}
-                />
+                <div className="relative min-h-0 flex-1">
+                  <LogScrollArea
+                    ref={logListRef}
+                    lines={visibleLogLines}
+                    totalLineCount={logLines.length}
+                    filter={logFilter}
+                    autoScroll={logAutoScroll}
+                    onBottomStateChange={handleLogBottomStateChange}
+                    onUserScrollIntent={markLogUserScrollIntent}
+                  />
+                  {!logAutoScroll && visibleLogLines.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={jumpToLogBottom}
+                      className="absolute bottom-4 left-1/2 grid size-10 -translate-x-1/2 cursor-pointer place-items-center rounded-full border border-sky-200 bg-sky-600 text-white shadow-lg shadow-sky-900/20 transition hover:bg-sky-700 dark:border-sky-800 dark:shadow-black/30"
+                      title="Jump to bottom"
+                    >
+                      <ArrowDown className="size-5" aria-hidden="true" />
+                    </button>
+                  ) : null}
+                </div>
               </TabPanel>
               <TabPanel className="h-full min-h-0 bg-white dark:bg-slate-950">
                 <DescribePanel
