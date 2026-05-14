@@ -2,6 +2,12 @@
 
 A small Tauri desktop app for browsing Kubernetes contexts, namespaces, pods, logs, and pod descriptions.
 
+## Install
+
+```sh
+brew install --cask andrewvos/tap/k100s
+```
+
 ## Requirements
 
 - [Bun](https://bun.sh/)
@@ -27,15 +33,6 @@ bun run build
 ```
 
 The Tauri Rust backend calls `kubectl` directly and exposes commands/events to the renderer.
-
-## Homebrew
-
-After a GitHub release has been published, install with:
-
-```sh
-brew tap AndrewVos/tap
-brew install --cask k100s
-```
 
 Releases are created from `main` with:
 
