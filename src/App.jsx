@@ -24,6 +24,7 @@ import {
   ArrowUp,
   Boxes,
   ChevronDown,
+  ChevronRight,
   FileText,
   LoaderCircle,
   Search,
@@ -536,7 +537,17 @@ function ClusterNamespaceMenu({
         className="inline-flex h-10 max-w-[32rem] cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950 focus:outline-none focus:ring-4 focus:ring-sky-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-200 dark:hover:bg-slate-900 dark:hover:text-slate-50 dark:focus:ring-sky-950 dark:disabled:bg-slate-900 dark:disabled:text-slate-500"
         title={currentLabel}
       >
-        <span className="truncate">{loadingContexts ? "Loading clusters..." : currentLabel}</span>
+        {loadingContexts ? (
+          <span className="truncate">Loading clusters...</span>
+        ) : context && namespace ? (
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="min-w-0 truncate">{context}</span>
+            <ChevronRight className="size-3.5 shrink-0 text-slate-400 dark:text-slate-500" aria-hidden="true" />
+            <span className="min-w-0 truncate">{namespace}</span>
+          </span>
+        ) : (
+          <span className="truncate">{currentLabel}</span>
+        )}
         <span
           className="h-0 w-0 shrink-0 border-x-[4px] border-t-[5px] border-x-transparent border-t-slate-500 dark:border-t-slate-400"
           aria-hidden="true"
