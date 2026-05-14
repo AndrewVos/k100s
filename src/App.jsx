@@ -537,7 +537,10 @@ function ClusterNamespaceMenu({
         title={currentLabel}
       >
         <span className="truncate">{loadingContexts ? "Loading clusters..." : currentLabel}</span>
-        <ChevronDown className="size-4 shrink-0" aria-hidden="true" />
+        <span
+          className="h-0 w-0 shrink-0 border-x-[4px] border-t-[5px] border-x-transparent border-t-slate-500 dark:border-t-slate-400"
+          aria-hidden="true"
+        />
       </MenuButton>
       <MenuItems
         anchor="bottom end"
@@ -2105,8 +2108,8 @@ export default function App() {
 
         <div className={`${error ? "mt-5" : ""} flex min-h-0 flex-1 flex-col overflow-hidden bg-white dark:bg-slate-950`}>
           {isBusy ? (
-            <div className="shrink-0 border-b border-slate-200 px-6 py-2 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
-              Loading...
+            <div className="grid h-9 shrink-0 place-items-center border-b border-slate-200 dark:border-slate-800">
+              <LoaderCircle className="size-4 animate-spin text-sky-600" aria-hidden="true" />
             </div>
           ) : null}
 
