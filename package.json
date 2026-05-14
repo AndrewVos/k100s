@@ -1,6 +1,6 @@
 {
   "name": "k100s",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A Kubernetes desktop browser for clusters, namespaces, and pods.",
   "private": true,
   "type": "module",
