@@ -2002,7 +2002,6 @@ export default function App() {
     });
   }, [activeWorkspaceTab, searchOpenForActiveTab]);
 
-  const isBusy = loading.contexts || loading.namespaces || loading.pods;
   const canRetryNamespaces = errorSource === "namespaces" && context;
 
   useEffect(() => {
@@ -2127,12 +2126,6 @@ export default function App() {
         ) : null}
 
         <div className={`${error ? "mt-5" : ""} flex min-h-0 flex-1 flex-col overflow-hidden bg-white dark:bg-slate-950`}>
-          {isBusy ? (
-            <div className="grid h-9 shrink-0 place-items-center border-b border-slate-200 dark:border-slate-800">
-              <LoaderCircle className="size-4 animate-spin text-sky-600" aria-hidden="true" />
-            </div>
-          ) : null}
-
           {!context ? (
             <EmptyState title="No cluster selected" message="Make sure kubectl is installed and has configured contexts." />
           ) : error ? (
