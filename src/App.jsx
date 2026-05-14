@@ -24,7 +24,6 @@ import {
   ArrowUp,
   Boxes,
   ChevronDown,
-  ChevronRight,
   FileText,
   LoaderCircle,
   Search,
@@ -577,7 +576,7 @@ function ClusterNamespaceMenu({
                     </span>
                     <span className="flex shrink-0 items-center gap-1">
                       {isLoading ? <LoaderCircle className="size-4 animate-spin text-slate-500" aria-hidden="true" /> : null}
-                      <ChevronRight className="size-4 text-slate-400" aria-hidden="true" />
+                      <span className="h-0 w-0 border-y-[4px] border-l-[5px] border-y-transparent border-l-slate-400 dark:border-l-slate-500" aria-hidden="true" />
                     </span>
                   </button>
                 );
