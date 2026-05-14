@@ -394,6 +394,7 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
   const [deploymentDescribeLoading, setDeploymentDescribeLoading] = useState(false);
   const [deploymentDescribeError, setDeploymentDescribeError] = useState("");
   const logLineIdRef = useRef(0);
+  const logListRef = useRef(null);
   const logRemainderRef = useRef("");
   const logStreamIdRef = useRef("");
   const bottomStateTimerRef = useRef(null);
@@ -448,6 +449,28 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
       return value.includes(filter);
     });
   }, [logFilter, logLines]);
+
+  function scrollLogsToBottom() {
+    if (visibleLogLines.length === 0) return;
+
+    window.requestAnimationFrame(() => {
+      logListRef.current?.scrollToIndex({
+        index: visibleLogLines.length - 1,
+        align: "end",
+        behavior: "auto"
+      });
+    });
+  }
+
+  function handleLogAutoScrollChange(checked) {
+    if (bottomStateTimerRef.current) {
+      window.clearTimeout(bottomStateTimerRef.current);
+      bottomStateTimerRef.current = null;
+    }
+
+    setLogAutoScroll(checked);
+    if (checked) scrollLogsToBottom();
+  }
 
   useEffect(() => {
     const podName = pod?.name;
@@ -635,7 +658,7 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
                       <input
                         type="checkbox"
                         checked={logAutoScroll}
-                        onChange={(event) => setLogAutoScroll(event.target.checked)}
+                        onChange={(event) => handleLogAutoScrollChange(event.target.checked)}
                         className="size-4 cursor-pointer rounded border-slate-300 text-sky-600 focus:ring-sky-500"
                       />
                       Autoscroll
@@ -663,6 +686,7 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
 
                 <div className={`min-h-0 flex-1 bg-white dark:bg-slate-950 ${wrapLogText ? "" : "overflow-x-auto"}`}>
                   <Virtuoso
+                    ref={logListRef}
                     data={visibleLogLines}
                     followOutput={logAutoScroll ? "auto" : false}
                     atBottomThreshold={80}
@@ -823,7 +847,9 @@ export default function App() {
   const [selectedPodName, setSelectedPodName] = useState("");
   const [podSort, setPodSort] = useState({ key: "name", direction: "asc" });
   const [podFilter, setPodFilter] = useState("");
+  const namespacesRequestRef = useRef(0);
   const podsRequestRef = useRef(0);
+  const podsRequestInFlightRef = useRef(0);
 
   const selectedContext = useMemo(
     () => contexts.find((item) => item.name === context),
@@ -908,6 +934,8 @@ export default function App() {
   async function loadNamespaces(nextContext) {
     if (!nextContext) return;
 
+    const requestId = namespacesRequestRef.current + 1;
+    namespacesRequestRef.current = requestId;
     setError("");
     setPods([]);
     setNamespaces([]);
@@ -916,6 +944,8 @@ export default function App() {
 
     try {
       const result = await api.getNamespaces(nextContext);
+      if (requestId !== namespacesRequestRef.current) return;
+
       const storedNamespace = window.localStorage.getItem(`${SELECTED_NAMESPACE_KEY}.${nextContext}`);
 
       setNamespaces(result);
@@ -927,18 +957,25 @@ export default function App() {
           : result[0] || ""
       );
     } catch (cause) {
+      if (requestId !== namespacesRequestRef.current) return;
+
       setError(cause.message || "Unable to read namespaces.");
     } finally {
-      setLoading((current) => ({ ...current, namespaces: false }));
+      if (requestId === namespacesRequestRef.current) {
+        setLoading((current) => ({ ...current, namespaces: false }));
+      }
     }
   }
 
   async function loadPods(nextContext = context, nextNamespace = namespace, options = {}) {
     if (!nextContext || !nextNamespace) return;
 
+    const showLoading = options.showLoading ?? true;
+    if (!showLoading && podsRequestInFlightRef.current) return;
+
     const requestId = podsRequestRef.current + 1;
     podsRequestRef.current = requestId;
-    const showLoading = options.showLoading ?? true;
+    podsRequestInFlightRef.current = requestId;
 
     setError("");
     if (showLoading) {
@@ -957,7 +994,10 @@ export default function App() {
       setError(cause.message || "Unable to read pods.");
       setPods([]);
     } finally {
-      if (showLoading) {
+      if (podsRequestInFlightRef.current === requestId) {
+        podsRequestInFlightRef.current = 0;
+      }
+      if (showLoading && requestId === podsRequestRef.current) {
         setLoading((current) => ({ ...current, pods: false }));
       }
     }

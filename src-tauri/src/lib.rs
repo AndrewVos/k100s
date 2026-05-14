@@ -2,13 +2,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::HashMap,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read},
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, State};
+
+const KUBECTL_COMMAND_TIMEOUT: Duration = Duration::from_secs(12);
+const KUBECTL_REQUEST_TIMEOUT: &str = "--request-timeout=8s";
 
 #[derive(Clone, Default)]
 struct AppState {
@@ -73,22 +76,83 @@ struct LogClosedPayload {
     signal: Option<String>,
 }
 
-fn run_kubectl(args: &[&str]) -> Result<String, String> {
-    let output = Command::new("kubectl")
-        .args(args)
-        .output()
+fn read_pipe<R: Read + Send + 'static>(mut pipe: R) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut output = Vec::new();
+        let _ = pipe.read_to_end(&mut output);
+        output
+    })
+}
+
+fn run_kubectl_blocking(args: Vec<String>, timeout: Duration) -> Result<String, String> {
+    let mut child = Command::new("kubectl")
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|cause| cause.to_string())?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = child.stdout.take().map(read_pipe);
+    let stderr = child.stderr.take().map(read_pipe);
+    let deadline = Instant::now() + timeout;
+    let timed_out;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                timed_out = false;
+                break status;
+            }
+            Ok(None) if Instant::now() >= deadline => {
+                timed_out = true;
+                let _ = child.kill();
+                break child.wait().map_err(|cause| cause.to_string())?;
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
+            Err(cause) => {
+                let _ = child.kill();
+                return Err(cause.to_string());
+            }
+        }
+    };
+
+    let stdout = stdout
+        .map(|handle| handle.join().unwrap_or_default())
+        .unwrap_or_default();
+    let stderr = stderr
+        .map(|handle| handle.join().unwrap_or_default())
+        .unwrap_or_default();
+    let stderr = String::from_utf8_lossy(&stderr).trim().to_string();
+
+    if timed_out {
+        let detail = if stderr.is_empty() {
+            String::new()
+        } else {
+            format!(" {stderr}")
+        };
+        return Err(format!(
+            "kubectl timed out after {} seconds.{}",
+            timeout.as_secs(),
+            detail
+        ));
+    }
+
+    if !status.success() {
         if stderr.is_empty() {
-            return Err(format!("kubectl exited with status {}", output.status));
+            return Err(format!("kubectl exited with status {status}"));
         }
 
         return Err(stderr);
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    Ok(String::from_utf8_lossy(&stdout).to_string())
+}
+
+async fn run_kubectl(args: Vec<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_kubectl_blocking(args, KUBECTL_COMMAND_TIMEOUT)
+    })
+    .await
+    .map_err(|cause| cause.to_string())?
 }
 
 fn string_value(value: Option<&Value>) -> String {
@@ -99,8 +163,14 @@ fn string_value(value: Option<&Value>) -> String {
 }
 
 #[tauri::command]
-fn get_contexts() -> Result<ContextsResult, String> {
-    let output = run_kubectl(&["config", "view", "-o", "json"])?;
+async fn get_contexts() -> Result<ContextsResult, String> {
+    let output = run_kubectl(vec![
+        "config".into(),
+        "view".into(),
+        "-o".into(),
+        "json".into(),
+    ])
+    .await?;
     let config: Value = serde_json::from_str(&output).map_err(|cause| cause.to_string())?;
     let current_context = config
         .get("current-context")
@@ -144,8 +214,17 @@ fn get_contexts() -> Result<ContextsResult, String> {
 }
 
 #[tauri::command]
-fn get_namespaces(context: String) -> Result<Vec<String>, String> {
-    let output = run_kubectl(&["--context", &context, "get", "namespaces", "-o", "json"])?;
+async fn get_namespaces(context: String) -> Result<Vec<String>, String> {
+    let output = run_kubectl(vec![
+        "--context".into(),
+        context,
+        KUBECTL_REQUEST_TIMEOUT.into(),
+        "get".into(),
+        "namespaces".into(),
+        "-o".into(),
+        "json".into(),
+    ])
+    .await?;
     let payload: Value = serde_json::from_str(&output).map_err(|cause| cause.to_string())?;
     let mut namespaces = payload
         .get("items")
@@ -240,17 +319,19 @@ fn summarize_pod(pod: &Value) -> Option<PodSummary> {
 }
 
 #[tauri::command]
-fn get_pods(context: String, namespace: String) -> Result<Vec<PodSummary>, String> {
-    let output = run_kubectl(&[
-        "--context",
-        &context,
-        "-n",
-        &namespace,
-        "get",
-        "pods",
-        "-o",
-        "json",
-    ])?;
+async fn get_pods(context: String, namespace: String) -> Result<Vec<PodSummary>, String> {
+    let output = run_kubectl(vec![
+        "--context".into(),
+        context,
+        "-n".into(),
+        namespace,
+        KUBECTL_REQUEST_TIMEOUT.into(),
+        "get".into(),
+        "pods".into(),
+        "-o".into(),
+        "json".into(),
+    ])
+    .await?;
     let payload: Value = serde_json::from_str(&output).map_err(|cause| cause.to_string())?;
     let mut pods = payload
         .get("items")
@@ -265,16 +346,22 @@ fn get_pods(context: String, namespace: String) -> Result<Vec<PodSummary>, Strin
 }
 
 #[tauri::command]
-fn describe_pod(context: String, namespace: String, pod_name: String) -> Result<String, String> {
-    run_kubectl(&[
-        "--context",
-        &context,
-        "-n",
-        &namespace,
-        "describe",
-        "pod",
-        &pod_name,
+async fn describe_pod(
+    context: String,
+    namespace: String,
+    pod_name: String,
+) -> Result<String, String> {
+    run_kubectl(vec![
+        "--context".into(),
+        context,
+        "-n".into(),
+        namespace,
+        KUBECTL_REQUEST_TIMEOUT.into(),
+        "describe".into(),
+        "pod".into(),
+        pod_name,
     ])
+    .await
 }
 
 fn owner_reference_name(payload: &Value, kind: &str) -> Option<String> {
@@ -288,38 +375,42 @@ fn owner_reference_name(payload: &Value, kind: &str) -> Option<String> {
 }
 
 #[tauri::command]
-fn describe_deployment_for_pod(
+async fn describe_deployment_for_pod(
     context: String,
     namespace: String,
     pod_name: String,
 ) -> Result<String, String> {
-    let pod_output = run_kubectl(&[
-        "--context",
-        &context,
-        "-n",
-        &namespace,
-        "get",
-        "pod",
-        &pod_name,
-        "-o",
-        "json",
-    ])?;
+    let pod_output = run_kubectl(vec![
+        "--context".into(),
+        context.clone(),
+        "-n".into(),
+        namespace.clone(),
+        KUBECTL_REQUEST_TIMEOUT.into(),
+        "get".into(),
+        "pod".into(),
+        pod_name.clone(),
+        "-o".into(),
+        "json".into(),
+    ])
+    .await?;
     let pod: Value = serde_json::from_str(&pod_output).map_err(|cause| cause.to_string())?;
 
     let deployment_name = if let Some(name) = owner_reference_name(&pod, "Deployment") {
         name
     } else if let Some(replica_set_name) = owner_reference_name(&pod, "ReplicaSet") {
-        let replica_set_output = run_kubectl(&[
-            "--context",
-            &context,
-            "-n",
-            &namespace,
-            "get",
-            "replicaset",
-            &replica_set_name,
-            "-o",
-            "json",
-        ])?;
+        let replica_set_output = run_kubectl(vec![
+            "--context".into(),
+            context.clone(),
+            "-n".into(),
+            namespace.clone(),
+            KUBECTL_REQUEST_TIMEOUT.into(),
+            "get".into(),
+            "replicaset".into(),
+            replica_set_name.clone(),
+            "-o".into(),
+            "json".into(),
+        ])
+        .await?;
         let replica_set: Value =
             serde_json::from_str(&replica_set_output).map_err(|cause| cause.to_string())?;
 
@@ -330,15 +421,17 @@ fn describe_deployment_for_pod(
         return Err(format!("No owning Deployment found for pod {pod_name}."));
     };
 
-    run_kubectl(&[
-        "--context",
-        &context,
-        "-n",
-        &namespace,
-        "describe",
-        "deployment",
-        &deployment_name,
+    run_kubectl(vec![
+        "--context".into(),
+        context,
+        "-n".into(),
+        namespace,
+        KUBECTL_REQUEST_TIMEOUT.into(),
+        "describe".into(),
+        "deployment".into(),
+        deployment_name,
     ])
+    .await
 }
 
 fn stop_pod_logs_by_id(state: &AppState, id: &str) {
