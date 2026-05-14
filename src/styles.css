@@ -40,3 +40,11 @@ select:disabled,
 input:disabled {
   cursor: not-allowed;
 }
+
+.hidden-scrollbar {
+  scrollbar-width: none;
+}
+
+.hidden-scrollbar::-webkit-scrollbar {
+  display: none;
+}

@@ -2055,7 +2055,7 @@ export default function App() {
         </div>
 
         <div className="px-2 py-1">
-          <div className="flex gap-1 overflow-x-auto">
+          <div className="hidden-scrollbar flex gap-1 overflow-x-auto">
             <button
               type="button"
               onClick={() => setActiveWorkspaceTab("pods")}
@@ -2073,7 +2073,7 @@ export default function App() {
                 key={tab.id}
                 type="button"
                 onClick={() => setActiveWorkspaceTab(tab.id)}
-                className={`group flex max-w-64 shrink-0 cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium outline-none transition ${
+                className={`group flex shrink-0 cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium outline-none transition ${
                   activeWorkspaceTab === tab.id
                     ? "border-slate-200 bg-white text-slate-950 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-100"
                     : "border-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-100"
@@ -2100,7 +2100,7 @@ export default function App() {
                   <X className="size-3.5" aria-hidden="true" />
                 </span>
                 <PodActionIcon action={tab.action} className="size-5 shrink-0 p-0.5 text-slate-500 group-hover:hidden dark:text-slate-400" />
-                <span className="truncate">{tab.pod.name}</span>
+                <span className="whitespace-nowrap">{tab.pod.name}</span>
               </button>
             ))}
           </div>
