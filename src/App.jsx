@@ -1,9 +1,5 @@
 import { forwardRef, memo, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
-  Dialog,
-  DialogBackdrop,
-  DialogPanel,
-  DialogTitle,
   Tab,
   TabGroup,
   TabList,
@@ -23,7 +19,8 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ArrowDown, ArrowLeft, ArrowUp, Boxes, LoaderCircle, Server, Settings, TerminalSquare, X } from "lucide-react";
+import { WebviewWindow, getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { ArrowDown, ArrowLeft, ArrowUp, Boxes, LoaderCircle, Server, Settings, X } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
 
@@ -136,6 +133,77 @@ const LOG_SCROLL_OVERSCAN = 600;
 const LOG_CONTENT_HORIZONTAL_PADDING = 32;
 const LOG_FOOTER_HEIGHT = 56;
 const logMeasurementCache = new Map();
+
+function podWindowLabel(context, namespace, podName) {
+  const value = `${context}:${namespace}:${podName}`;
+  let hash = 0;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+
+  return `pod-${hash.toString(36)}`;
+}
+
+function podWindowUrl(data) {
+  const params = new URLSearchParams({
+    view: "pod",
+    data: JSON.stringify(data)
+  });
+
+  return `/?${params.toString()}`;
+}
+
+function readPodWindowData() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("view") !== "pod") return null;
+
+  try {
+    return JSON.parse(params.get("data") || "null");
+  } catch {
+    return null;
+  }
+}
+
+async function closeCurrentWindow() {
+  if ("__TAURI_INTERNALS__" in window) {
+    await getCurrentWebviewWindow().close();
+    return;
+  }
+
+  window.close();
+}
+
+async function openPodWindow({ context, namespace, nodeTone, pod }) {
+  if (!pod || !context || !namespace) return;
+
+  const label = podWindowLabel(context, namespace, pod.name);
+  const data = { context, namespace, nodeTone, pod };
+
+  if (!("__TAURI_INTERNALS__" in window)) {
+    window.open(podWindowUrl(data), label, "width=1180,height=780");
+    return;
+  }
+
+  const existing = await WebviewWindow.getByLabel(label);
+  if (existing) {
+    await existing.setFocus();
+    return;
+  }
+
+  const podWindow = new WebviewWindow(label, {
+    title: `${pod.name} - k100s`,
+    url: podWindowUrl(data),
+    width: 1180,
+    height: 780,
+    minWidth: 860,
+    minHeight: 580
+  });
+
+  podWindow.once("tauri://error", (event) => {
+    console.error("Unable to open pod window", event.payload);
+  });
+}
 
 function preparedLogText(text) {
   const value = String(text || " ");
@@ -717,7 +785,7 @@ const LogScrollArea = memo(forwardRef(function LogScrollArea(
   );
 }));
 
-function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, onClose }) {
+function PodDetailsView({ pod, context, namespace, nodeTone, effectiveTheme, onClose }) {
   const detailTabs = ["Logs", "Pod", "Deployment", "Shell"];
   const [logLines, setLogLines] = useState([]);
   const [logAutoScroll, setLogAutoScroll] = useState(true);
@@ -919,16 +987,24 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
     };
   }, [pod?.name, context, namespace]);
 
+  if (!pod) {
+    return (
+      <main className="grid h-screen place-items-center bg-white px-6 text-center text-slate-950 dark:bg-slate-950 dark:text-slate-100">
+        <div>
+          <h1 className="text-base font-semibold">Pod details unavailable</h1>
+          <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">This pod window did not receive pod details.</p>
+        </div>
+      </main>
+    );
+  }
+
   return (
-    <Dialog open={Boolean(pod)} onClose={onClose} className="relative z-50">
-      <DialogBackdrop className="fixed inset-0 bg-slate-950/45 dark:bg-black/60" />
-      <div className="fixed inset-0 flex">
-        <DialogPanel className="flex h-full w-full flex-col overflow-hidden bg-white dark:bg-slate-950">
+    <main className="flex h-screen flex-col overflow-hidden bg-white text-slate-950 dark:bg-slate-950 dark:text-slate-100">
           <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 dark:border-slate-800">
             <div className="min-w-0">
-              <DialogTitle className="truncate text-lg font-semibold text-slate-950 dark:text-slate-100">
+              <h1 className="truncate text-lg font-semibold text-slate-950 dark:text-slate-100">
                 {pod?.name}
-              </DialogTitle>
+              </h1>
               <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
                 {context} / {namespace}
               </p>
@@ -1060,9 +1136,7 @@ function PodDetailsModal({ pod, context, namespace, nodeTone, effectiveTheme, on
               </TabPanel>
             </TabPanels>
           </TabGroup>
-        </DialogPanel>
-      </div>
-    </Dialog>
+    </main>
   );
 }
 
@@ -1321,7 +1395,6 @@ export default function App() {
   const [error, setError] = useState("");
   const [errorSource, setErrorSource] = useState("");
   const [lastUpdated, setLastUpdated] = useState("");
-  const [selectedPodName, setSelectedPodName] = useState("");
   const [podSort, setPodSort] = useState({ key: "name", direction: "asc" });
   const [podFilter, setPodFilter] = useState("");
   const namespacesRequestRef = useRef(0);
@@ -1341,10 +1414,7 @@ export default function App() {
 
     return new Map(nodeNames.map((nodeName, index) => [nodeName, NODE_TONES[index % NODE_TONES.length]]));
   }, [pods]);
-  const selectedPod = useMemo(
-    () => pods.find((pod) => pod.name === selectedPodName) ?? null,
-    [pods, selectedPodName]
-  );
+  const podWindowData = useMemo(readPodWindowData, []);
   const visiblePods = useMemo(() => {
     const filter = podFilter.trim().toLowerCase();
     if (!filter) return pods;
@@ -1388,6 +1458,15 @@ export default function App() {
       key,
       direction: current.key === key && current.direction === "asc" ? "desc" : "asc"
     }));
+  }
+
+  function handleOpenPod(pod) {
+    openPodWindow({
+      context,
+      namespace,
+      nodeTone: nodeToneByName.get(pod.node),
+      pod
+    });
   }
 
   function changeNamespace(nextNamespace) {
@@ -1530,30 +1609,36 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (podWindowData) return;
     loadContexts();
-  }, []);
+  }, [podWindowData]);
 
   useEffect(() => {
+    if (podWindowData) return;
     if (context) window.localStorage.setItem(SELECTED_CONTEXT_KEY, context);
-  }, [context]);
+  }, [context, podWindowData]);
 
   useEffect(() => {
+    if (podWindowData) return;
     if (context && namespace) {
       if (namespacesContext === context && namespaces.includes(namespace)) {
         window.localStorage.setItem(namespaceStorageKey(context), namespace);
       }
     }
-  }, [context, namespace, namespaces, namespacesContext]);
+  }, [context, namespace, namespaces, namespacesContext, podWindowData]);
 
   useEffect(() => {
+    if (podWindowData) return;
     loadNamespaces(context);
-  }, [context]);
+  }, [context, podWindowData]);
 
   useEffect(() => {
+    if (podWindowData) return;
     loadPods(context, namespace);
-  }, [context, namespace]);
+  }, [context, namespace, podWindowData]);
 
   useEffect(() => {
+    if (podWindowData) return undefined;
     if (!context || !namespace) return undefined;
 
     const interval = window.setInterval(() => {
@@ -1561,7 +1646,7 @@ export default function App() {
     }, 5000);
 
     return () => window.clearInterval(interval);
-  }, [context, namespace]);
+  }, [context, namespace, podWindowData]);
 
   const isBusy = loading.contexts || loading.namespaces || loading.pods;
   const canRetryNamespaces = errorSource === "namespaces" && context;
@@ -1583,6 +1668,19 @@ export default function App() {
     return () => media.removeEventListener("change", syncTheme);
   }, [theme]);
 
+  if (podWindowData) {
+    return (
+      <PodDetailsView
+        pod={podWindowData.pod}
+        context={podWindowData.context}
+        namespace={podWindowData.namespace}
+        nodeTone={podWindowData.nodeTone}
+        effectiveTheme={effectiveTheme}
+        onClose={closeCurrentWindow}
+      />
+    );
+  }
+
   if (page === "settings") {
     return <SettingsPage theme={theme} setTheme={setTheme} onBack={() => setPage("pods")} />;
   }
@@ -1591,15 +1689,7 @@ export default function App() {
     <main className="flex h-screen flex-col overflow-hidden bg-slate-100 text-slate-950 dark:bg-slate-950 dark:text-slate-100">
       <header className="shrink-0 border-b border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950">
         <div className="flex w-full items-center justify-between gap-4 px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="grid size-10 place-items-center rounded-lg bg-sky-600 text-white">
-              <TerminalSquare className="size-5" aria-hidden="true" />
-            </div>
-            <div>
-              <h1 className="text-xl font-semibold tracking-normal">k100s</h1>
-              <p className="text-sm text-slate-600 dark:text-slate-400">Kubernetes contexts, namespaces, and pods</p>
-            </div>
-          </div>
+          <h1 className="text-xl font-semibold tracking-normal">k100s</h1>
 
           <button
             type="button"
@@ -1745,11 +1835,11 @@ export default function App() {
                         key={pod.name}
                         tabIndex={0}
                         role="button"
-                        onClick={() => setSelectedPodName(pod.name)}
+                        onClick={() => handleOpenPod(pod)}
                         onKeyDown={(event) => {
                           if (event.key === "Enter" || event.key === " ") {
                             event.preventDefault();
-                            setSelectedPodName(pod.name);
+                            handleOpenPod(pod);
                           }
                         }}
                         className="cursor-pointer hover:bg-slate-50 focus:bg-sky-50 focus:outline-none dark:hover:bg-slate-900 dark:focus:bg-sky-950"
@@ -1777,15 +1867,6 @@ export default function App() {
           )}
         </div>
       </section>
-
-      <PodDetailsModal
-        pod={selectedPod}
-        context={context}
-        namespace={namespace}
-        nodeTone={selectedPod ? nodeToneByName.get(selectedPod.node) : undefined}
-        effectiveTheme={effectiveTheme}
-        onClose={() => setSelectedPodName("")}
-      />
 
     </main>
   );
