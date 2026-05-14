@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter, State};
 
 const KUBECTL_COMMAND_TIMEOUT: Duration = Duration::from_secs(12);
 const KUBECTL_REQUEST_TIMEOUT: &str = "--request-timeout=8s";
+const APP_ICON_PNG: &[u8] = include_bytes!("../icons/icon.png");
 
 #[derive(Clone, Default)]
 struct AppState {
@@ -640,9 +641,37 @@ fn stop_pod_logs(state: State<'_, AppState>, id: String) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn set_macos_app_icon() {
+    use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let Some(main_thread) = MainThreadMarker::new() else {
+        return;
+    };
+
+    let data = NSData::with_bytes(APP_ICON_PNG);
+    let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
+        return;
+    };
+
+    let app = NSApplication::sharedApplication(main_thread);
+    unsafe {
+        app.setApplicationIconImage(Some(&image));
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_macos_app_icon() {}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|_| {
+            set_macos_app_icon();
+            Ok(())
+        })
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             get_contexts,

@@ -1144,7 +1144,7 @@ export default function App() {
         </div>
       </header>
 
-      <section className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col px-6 py-5">
+      <section className="flex min-h-0 w-full flex-1 flex-col px-6 py-5">
         <div className="grid shrink-0 gap-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 md:grid-cols-[1fr_1fr_1fr_auto_auto] md:items-end">
           <SelectField
             label="Cluster"
