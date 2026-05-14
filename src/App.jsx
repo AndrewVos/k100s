@@ -27,6 +27,7 @@ import {
   ChevronRight,
   FileText,
   LoaderCircle,
+  Search,
   ScrollText,
   Settings,
   SquareTerminal,
@@ -305,7 +306,7 @@ const NODE_TONES = [
   { backgroundColor: "#7c2d12", color: "#ffffff", borderColor: "#641e0a" }
 ];
 
-function NodePill({ nodeName, tone }) {
+function NodePill({ nodeName, tone, filter = "" }) {
   if (!nodeName) {
     return <span className="text-slate-500">Unscheduled</span>;
   }
@@ -316,24 +317,10 @@ function NodePill({ nodeName, tone }) {
       style={tone}
       title={nodeName}
     >
-      <span className="truncate">{nodeName}</span>
+      <span className="truncate">
+        <HighlightedText text={nodeName} filter={filter} />
+      </span>
     </span>
-  );
-}
-
-function SelectField({ label, value, onChange, disabled, children }) {
-  return (
-    <label className="grid gap-1.5 text-sm font-medium text-slate-700 dark:text-slate-300">
-      {label}
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        disabled={disabled}
-        className="h-10 cursor-pointer rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 shadow-sm outline-none transition focus:border-sky-500 focus:ring-4 focus:ring-sky-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-sky-400 dark:focus:ring-sky-950 dark:disabled:bg-slate-800 dark:disabled:text-slate-500"
-      >
-        {children}
-      </select>
-    </label>
   );
 }
 
@@ -451,6 +438,38 @@ function PodTableColGroup() {
 function PodActionIcon({ action, className = "size-4" }) {
   const Icon = POD_ACTIONS[action]?.Icon || ScrollText;
   return <Icon className={className} aria-hidden="true" />;
+}
+
+function SearchBar({ inputRef, value, onChange, onClose }) {
+  return (
+    <div className="shrink-0 border-b border-slate-200 bg-white px-6 py-2 dark:border-slate-800 dark:bg-slate-950">
+      <div className="flex items-center gap-2">
+        <Search className="size-4 shrink-0 text-slate-500 dark:text-slate-400" aria-hidden="true" />
+        <input
+          ref={inputRef}
+          type="search"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              onClose();
+            }
+          }}
+          className="h-9 min-w-0 flex-1 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-sky-500 focus:ring-4 focus:ring-sky-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-sky-400 dark:focus:ring-sky-950"
+          placeholder="Search current tab"
+        />
+        <button
+          type="button"
+          onClick={onClose}
+          className="grid size-9 shrink-0 cursor-pointer place-items-center rounded-md border border-slate-200 text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-900 dark:hover:text-slate-50"
+          title="Close search"
+        >
+          <X className="size-4" aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function ClusterNamespaceMenu({
@@ -625,13 +644,14 @@ function escapeRegExp(value) {
 
 function HighlightedText({ text, filter }) {
   const query = filter.trim();
-  if (!query) return text || " ";
+  const value = String(text ?? "");
+  if (!query) return value || " ";
 
-  const parts = String(text || "").split(new RegExp(`(${escapeRegExp(query)})`, "gi"));
+  const parts = value.split(new RegExp(`(${escapeRegExp(query)})`, "gi"));
 
   return parts.map((part, index) =>
     part.toLowerCase() === query.toLowerCase() ? (
-      <mark key={`${part}-${index}`} className="rounded bg-amber-200 px-0.5 text-slate-950">
+      <mark key={`${part}-${index}`} className="rounded bg-amber-200 text-slate-950">
         {part}
       </mark>
     ) : (
@@ -660,7 +680,7 @@ function createSyntaxStyle(baseStyle) {
   };
 }
 
-function DescribePanel({ loading, error, text, emptyMessage, failureTitle, syntaxStyle }) {
+function DescribePanel({ loading, error, text, emptyMessage, failureTitle, searchQuery, syntaxStyle }) {
   if (loading) {
     return (
       <div className="grid h-full place-items-center">
@@ -677,6 +697,14 @@ function DescribePanel({ loading, error, text, emptyMessage, failureTitle, synta
           <p className="mt-1 max-w-2xl text-sm text-slate-600 dark:text-slate-400">{error}</p>
         </div>
       </div>
+    );
+  }
+
+  if (searchQuery.trim()) {
+    return (
+      <pre className="h-full overflow-auto whitespace-pre-wrap p-4 font-mono text-xs leading-5 text-slate-800 dark:text-slate-200">
+        <HighlightedText text={text || emptyMessage} filter={searchQuery} />
+      </pre>
     );
   }
 
@@ -993,11 +1021,10 @@ const LogScrollArea = memo(forwardRef(function LogScrollArea(
   );
 }));
 
-function PodDetailsView({ pod, context, namespace, nodeTone, effectiveTheme, action = "logs" }) {
+function PodDetailsView({ pod, context, namespace, nodeTone, effectiveTheme, action = "logs", active = false, searchQuery = "" }) {
   const actionKey = POD_ACTIONS[action] ? action : "logs";
   const [logLines, setLogLines] = useState([]);
   const [logAutoScroll, setLogAutoScroll] = useState(true);
-  const [logFilter, setLogFilter] = useState("");
   const [describeText, setDescribeText] = useState("");
   const [describeLoading, setDescribeLoading] = useState(false);
   const [describeError, setDescribeError] = useState("");
@@ -1060,14 +1087,14 @@ function PodDetailsView({ pod, context, namespace, nodeTone, effectiveTheme, act
   }
 
   const visibleLogLines = useMemo(() => {
-    const filter = logFilter.trim().toLowerCase();
+    const filter = searchQuery.trim().toLowerCase();
     if (!filter) return logLines;
 
     return logLines.filter((line) => {
       const value = `${line.timestamp} ${line.message}`.toLowerCase();
       return value.includes(filter);
     });
-  }, [logFilter, logLines]);
+  }, [searchQuery, logLines]);
 
   function scrollLogsToBottom() {
     if (visibleLogLines.length === 0) return;
@@ -1103,7 +1130,6 @@ function PodDetailsView({ pod, context, namespace, nodeTone, effectiveTheme, act
     logUserScrollIntentRef.current = false;
     setLogLines([]);
     setLogAutoScroll(true);
-    setLogFilter("");
 
     const unsubscribeData = api.onPodLogsData((payload) => {
       if (payload.id !== id) return;
@@ -1205,30 +1231,12 @@ function PodDetailsView({ pod, context, namespace, nodeTone, effectiveTheme, act
     <section className="flex h-full min-h-0 flex-col overflow-hidden bg-white text-slate-950 dark:bg-slate-950 dark:text-slate-100">
           <div className="flex min-h-0 flex-1 flex-col">
             {actionKey === "logs" ? (
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-2 dark:border-slate-800 dark:bg-slate-950">
-                <div className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">Logs</div>
-                <div className="flex flex-wrap items-center justify-end gap-3">
-                  <label className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300">
-                    Filter
-                    <input
-                      type="search"
-                      value={logFilter}
-                      onChange={(event) => setLogFilter(event.target.value)}
-                      className="h-8 w-56 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-sky-500 focus:ring-4 focus:ring-sky-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-sky-400 dark:focus:ring-sky-950"
-                      placeholder="Text in logs"
-                    />
-                  </label>
-                </div>
-              </div>
-            ) : null}
-
-            {actionKey === "logs" ? (
               <div className="relative min-h-0 flex-1">
                 <LogScrollArea
                   ref={logListRef}
                   lines={visibleLogLines}
                   totalLineCount={logLines.length}
-                  filter={logFilter}
+                  filter={searchQuery}
                   autoScroll={logAutoScroll}
                   onBottomStateChange={handleLogBottomStateChange}
                   onUserScrollIntent={markLogUserScrollIntent}
@@ -1254,6 +1262,7 @@ function PodDetailsView({ pod, context, namespace, nodeTone, effectiveTheme, act
                   text={describeText}
                   emptyMessage="No pod details output."
                   failureTitle="Pod details failed"
+                  searchQuery={searchQuery}
                   syntaxStyle={syntaxStyle}
                 />
               </div>
@@ -1267,6 +1276,7 @@ function PodDetailsView({ pod, context, namespace, nodeTone, effectiveTheme, act
                   text={deploymentDescribeText}
                   emptyMessage="No deployment details output."
                   failureTitle="Deployment details failed"
+                  searchQuery={searchQuery}
                   syntaxStyle={syntaxStyle}
                 />
               </div>
@@ -1279,7 +1289,7 @@ function PodDetailsView({ pod, context, namespace, nodeTone, effectiveTheme, act
                   context={context}
                   namespace={namespace}
                   effectiveTheme={effectiveTheme}
-                  active
+                  active={active}
                 />
               </div>
             ) : null}
@@ -1537,20 +1547,29 @@ export default function App() {
   const [errorSource, setErrorSource] = useState("");
   const [lastUpdated, setLastUpdated] = useState("");
   const [podSort, setPodSort] = useState({ key: "name", direction: "asc" });
-  const [podFilter, setPodFilter] = useState("");
   const [activeWorkspaceTab, setActiveWorkspaceTab] = useState("pods");
   const [openPodTabs, setOpenPodTabs] = useState([]);
+  const [searchTabId, setSearchTabId] = useState("");
+  const [searchQueriesByTab, setSearchQueriesByTab] = useState({});
   const namespacesRequestRef = useRef(0);
   const namespaceOptionsRequestRef = useRef(0);
   const activeNamespaceRequestIdRef = useRef("");
   const podsRequestRef = useRef(0);
   const activePodsRequestIdRef = useRef("");
   const podsRequestInFlightRef = useRef(0);
+  const searchInputRef = useRef(null);
+  const searchOpenForActiveTab = searchTabId === activeWorkspaceTab;
+  const activeSearchQuery = searchOpenForActiveTab ? searchQueriesByTab[activeWorkspaceTab] || "" : "";
 
   const selectedContext = useMemo(
     () => contexts.find((item) => item.name === context),
     [contexts, context]
   );
+  const sortedContexts = useMemo(
+    () => [...contexts].sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true })),
+    [contexts]
+  );
+  const workspaceTabIds = useMemo(() => ["pods", ...openPodTabs.map((tab) => tab.id)], [openPodTabs]);
   const nodeToneByName = useMemo(() => {
     const nodeNames = [...new Set(pods.map((pod) => pod.node).filter(Boolean))].sort((left, right) =>
       left.localeCompare(right)
@@ -1559,7 +1578,7 @@ export default function App() {
     return new Map(nodeNames.map((nodeName, index) => [nodeName, NODE_TONES[index % NODE_TONES.length]]));
   }, [pods]);
   const visiblePods = useMemo(() => {
-    const filter = podFilter.trim().toLowerCase();
+    const filter = activeSearchQuery.trim().toLowerCase();
     if (!filter) return pods;
 
     return pods.filter((pod) => {
@@ -1577,7 +1596,7 @@ export default function App() {
 
       return value.includes(filter);
     });
-  }, [podFilter, pods]);
+  }, [activeSearchQuery, pods]);
   const sortedPods = useMemo(() => {
     const direction = podSort.direction === "asc" ? 1 : -1;
 
@@ -1626,6 +1645,25 @@ export default function App() {
     }));
   }
 
+  function openSearch() {
+    setSearchTabId(activeWorkspaceTab);
+    window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+  }
+
+  function closeSearch() {
+    setSearchTabId("");
+  }
+
+  function changeActiveSearchQuery(value) {
+    setSearchQueriesByTab((current) => ({
+      ...current,
+      [activeWorkspaceTab]: value
+    }));
+  }
+
   function handleOpenPod(pod, action = "logs") {
     if (!pod || !context || !namespace) return;
 
@@ -1647,8 +1685,25 @@ export default function App() {
   }
 
   function closePodTab(tabId) {
+    const tabIndex = workspaceTabIds.indexOf(tabId);
+    const fallbackTabId = workspaceTabIds[tabIndex - 1] || "pods";
+
     setOpenPodTabs((current) => current.filter((tab) => tab.id !== tabId));
-    setActiveWorkspaceTab((current) => (current === tabId ? "pods" : current));
+    setActiveWorkspaceTab((current) => (current === tabId ? fallbackTabId : current));
+    setSearchTabId((current) => (current === tabId ? "" : current));
+  }
+
+  function switchWorkspaceTab(direction) {
+    if (workspaceTabIds.length === 0) return;
+
+    const currentIndex = Math.max(0, workspaceTabIds.indexOf(activeWorkspaceTab));
+    const nextIndex = (currentIndex + direction + workspaceTabIds.length) % workspaceTabIds.length;
+    setActiveWorkspaceTab(workspaceTabIds[nextIndex]);
+  }
+
+  function closeActiveWorkspaceTab() {
+    if (activeWorkspaceTab === "pods") return;
+    closePodTab(activeWorkspaceTab);
   }
 
   function changeNamespace(nextNamespace) {
@@ -1875,6 +1930,56 @@ export default function App() {
     return () => window.clearInterval(interval);
   }, [context, namespace]);
 
+  useEffect(() => {
+    function handleFindShortcut(event) {
+      const isMac = /Mac|iPhone|iPad|iPod/.test(window.navigator.platform);
+      const usesFindModifier = isMac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+      if (!usesFindModifier || event.altKey || event.shiftKey || event.key.toLowerCase() !== "f") return;
+
+      event.preventDefault();
+      openSearch();
+    }
+
+    window.addEventListener("keydown", handleFindShortcut);
+    return () => window.removeEventListener("keydown", handleFindShortcut);
+  }, [activeWorkspaceTab]);
+
+  useEffect(() => {
+    function handleTabShortcut(event) {
+      const key = event.key.toLowerCase();
+
+      if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && key === "w") {
+        if (activeWorkspaceTab === "pods") return;
+
+        event.preventDefault();
+        closeActiveWorkspaceTab();
+        return;
+      }
+
+      if (event.metaKey && event.shiftKey && !event.ctrlKey && !event.altKey && (event.key === "[" || event.key === "]")) {
+        event.preventDefault();
+        switchWorkspaceTab(event.key === "[" ? -1 : 1);
+        return;
+      }
+
+      if (!event.ctrlKey || event.metaKey || event.altKey || key !== "tab") return;
+
+      event.preventDefault();
+      switchWorkspaceTab(event.shiftKey ? -1 : 1);
+    }
+
+    window.addEventListener("keydown", handleTabShortcut);
+    return () => window.removeEventListener("keydown", handleTabShortcut);
+  }, [activeWorkspaceTab, workspaceTabIds]);
+
+  useEffect(() => {
+    if (!searchOpenForActiveTab) return;
+
+    window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+    });
+  }, [activeWorkspaceTab, searchOpenForActiveTab]);
+
   const isBusy = loading.contexts || loading.namespaces || loading.pods;
   const canRetryNamespaces = errorSource === "namespaces" && context;
 
@@ -1906,7 +2011,7 @@ export default function App() {
           <h1 className="text-xl font-semibold tracking-normal">k100s</h1>
           <div className="flex min-w-0 items-center gap-2">
             <ClusterNamespaceMenu
-              contexts={contexts}
+              contexts={sortedContexts}
               context={context}
               namespace={namespace}
               loadingContexts={loading.contexts}
@@ -1984,27 +2089,14 @@ export default function App() {
 
       <div className="min-h-0 flex-1">
         <section className={`h-full min-h-0 w-full flex-col bg-white dark:bg-slate-950 ${activeWorkspaceTab === "pods" ? "flex" : "hidden"}`}>
-        <div className="flex shrink-0 flex-wrap items-end justify-between gap-3 border-b border-slate-200 bg-white px-6 py-4 dark:border-slate-800 dark:bg-slate-950">
-          <div className="flex flex-wrap items-center gap-3">
-            <div className={`flex h-10 items-center rounded-md border px-3 text-sm font-medium ${podSummary.tone}`}>
-              {podSummary.health}
-            </div>
-            <div className={`flex h-10 items-center rounded-md border px-3 text-sm font-medium ${podSummary.tone}`}>
-              {podSummary.readyPercentage}% ready
-            </div>
-          </div>
-
-          <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
-            Filter
-            <input
-              type="search"
-              value={podFilter}
-              onChange={(event) => setPodFilter(event.target.value)}
-              className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-sky-500 focus:ring-4 focus:ring-sky-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-sky-400 dark:focus:ring-sky-950"
-              placeholder="Filter pods"
-            />
-          </label>
-        </div>
+        {searchOpenForActiveTab ? (
+          <SearchBar
+            inputRef={searchInputRef}
+            value={activeSearchQuery}
+            onChange={changeActiveSearchQuery}
+            onClose={closeSearch}
+          />
+        ) : null}
 
         {error ? (
           <div className="mx-6 mt-5 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-200">
@@ -2106,18 +2198,24 @@ export default function App() {
                         className="cursor-pointer hover:bg-slate-50 focus:bg-sky-50 focus:outline-none dark:hover:bg-slate-900 dark:focus:bg-sky-950"
                       >
                         <td className="truncate px-4 py-3 font-medium text-slate-950 dark:text-slate-100" title={pod.name}>
-                          {pod.name}
+                          <HighlightedText text={pod.name} filter={activeSearchQuery} />
                         </td>
                         <td className="truncate px-2 py-3">
                           <span className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ring-1 ${statusTone(pod.status, pod.detail)}`}>
-                            {pod.detail || pod.status}
+                            <HighlightedText text={pod.detail || pod.status} filter={activeSearchQuery} />
                           </span>
                         </td>
-                        <td className="truncate px-2 py-3 text-slate-700 dark:text-slate-300">{pod.ready}</td>
-                        <td className="truncate px-2 py-3 text-slate-700 dark:text-slate-300">{pod.restarts}</td>
-                        <td className="truncate px-2 py-3 text-slate-700 dark:text-slate-300">{formatAge(pod.age)}</td>
+                        <td className="truncate px-2 py-3 text-slate-700 dark:text-slate-300">
+                          <HighlightedText text={pod.ready} filter={activeSearchQuery} />
+                        </td>
+                        <td className="truncate px-2 py-3 text-slate-700 dark:text-slate-300">
+                          <HighlightedText text={pod.restarts} filter={activeSearchQuery} />
+                        </td>
+                        <td className="truncate px-2 py-3 text-slate-700 dark:text-slate-300">
+                          <HighlightedText text={formatAge(pod.age)} filter={activeSearchQuery} />
+                        </td>
                         <td className="truncate px-2 py-3">
-                          <NodePill nodeName={pod.node} tone={nodeToneByName.get(pod.node)} />
+                          <NodePill nodeName={pod.node} tone={nodeToneByName.get(pod.node)} filter={activeSearchQuery} />
                         </td>
                         <td className="py-2 pl-1 pr-2">
                           <PodActionMenu pod={pod} onOpen={handleOpenPod} />
@@ -2132,19 +2230,44 @@ export default function App() {
         </div>
         </section>
 
-        {openPodTabs.map((tab) => (
-          <div key={tab.id} className={activeWorkspaceTab === tab.id ? "h-full min-h-0" : "hidden"}>
-            <PodDetailsView
-              pod={tab.pod}
-              context={tab.context}
-              namespace={tab.namespace}
-              nodeTone={tab.nodeTone}
-              effectiveTheme={effectiveTheme}
-              action={tab.action}
-            />
+        {openPodTabs.map((tab) => {
+          const isActiveTab = activeWorkspaceTab === tab.id;
+
+          return (
+          <div key={tab.id} className={isActiveTab ? "flex h-full min-h-0 flex-col" : "hidden"}>
+            {isActiveTab && searchOpenForActiveTab ? (
+              <SearchBar
+                inputRef={searchInputRef}
+                value={activeSearchQuery}
+                onChange={changeActiveSearchQuery}
+                onClose={closeSearch}
+              />
+            ) : null}
+            <div className="min-h-0 flex-1">
+              <PodDetailsView
+                pod={tab.pod}
+                context={tab.context}
+                namespace={tab.namespace}
+                nodeTone={tab.nodeTone}
+                effectiveTheme={effectiveTheme}
+                action={tab.action}
+                active={isActiveTab}
+                searchQuery={isActiveTab ? activeSearchQuery : ""}
+              />
+            </div>
           </div>
-        ))}
+          );
+        })}
       </div>
+
+      <footer className="flex shrink-0 flex-wrap items-center gap-1.5 border-t border-slate-200 bg-white px-3 py-1 dark:border-slate-800 dark:bg-slate-950">
+        <div className={`flex h-5 items-center rounded border px-1.5 text-[11px] font-medium ${podSummary.tone}`}>
+          {podSummary.health}
+        </div>
+        <div className={`flex h-5 items-center rounded border px-1.5 text-[11px] font-medium ${podSummary.tone}`}>
+          {podSummary.readyPercentage}% ready
+        </div>
+      </footer>
 
     </main>
   );
