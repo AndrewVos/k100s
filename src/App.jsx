@@ -27,6 +27,7 @@ import {
   ChevronRight,
   FileText,
   LoaderCircle,
+  ScrollText,
   Settings,
   SquareTerminal,
   X
@@ -200,10 +201,10 @@ function namespaceStorageKey(context) {
 }
 
 const POD_ACTIONS = {
-  logs: { label: "Logs" },
-  shell: { label: "Shell" },
-  pod: { label: "Pod" },
-  deployment: { label: "Deployment" }
+  logs: { label: "Logs", Icon: ScrollText },
+  shell: { label: "Shell", Icon: SquareTerminal },
+  pod: { label: "Pod", Icon: FileText },
+  deployment: { label: "Deployment", Icon: Boxes }
 };
 
 function podTabId(context, namespace, podName, action = "logs") {
@@ -445,6 +446,11 @@ function PodTableColGroup() {
       <col className="w-12" />
     </colgroup>
   );
+}
+
+function PodActionIcon({ action, className = "size-4" }) {
+  const Icon = POD_ACTIONS[action]?.Icon || ScrollText;
+  return <Icon className={className} aria-hidden="true" />;
 }
 
 function ClusterNamespaceMenu({
@@ -1928,12 +1934,13 @@ export default function App() {
             <button
               type="button"
               onClick={() => setActiveWorkspaceTab("pods")}
-              className={`shrink-0 cursor-pointer rounded-t-md border border-b-0 px-4 py-2 text-sm font-medium outline-none transition ${
+              className={`inline-flex shrink-0 cursor-pointer items-center gap-2 rounded-t-md border border-b-0 px-4 py-2 text-sm font-medium outline-none transition ${
                 activeWorkspaceTab === "pods"
                   ? "border-slate-200 bg-white text-slate-950 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-100"
                   : "border-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-950 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-100"
               }`}
             >
+              <Boxes className="size-4" aria-hidden="true" />
               Pods
             </button>
             {openPodTabs.map((tab) => (
@@ -1948,10 +1955,8 @@ export default function App() {
                 }`}
                 title={`${tab.pod.name} - ${POD_ACTIONS[tab.action]?.label || "Logs"}`}
               >
+                <PodActionIcon action={tab.action} className="size-4 shrink-0 text-slate-500 dark:text-slate-400" />
                 <span className="truncate">{tab.pod.name}</span>
-                <span className="shrink-0 text-xs font-semibold text-slate-400 dark:text-slate-500">
-                  {POD_ACTIONS[tab.action]?.label || "Logs"}
-                </span>
                 <span
                   role="button"
                   tabIndex={0}
