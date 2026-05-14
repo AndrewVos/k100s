@@ -1,10 +1,11 @@
 # k100s
 
-A small Electron desktop app for browsing Kubernetes contexts, namespaces, and pods.
+A small Tauri desktop app for browsing Kubernetes contexts, namespaces, pods, logs, and pod descriptions.
 
 ## Requirements
 
 - [Bun](https://bun.sh/)
+- [Rust](https://www.rust-lang.org/tools/install)
 - `kubectl` installed and available on your `PATH`
 - A configured kubeconfig with one or more contexts
 
@@ -15,9 +16,9 @@ bun install
 bun run dev
 ```
 
-The React renderer runs on `http://127.0.0.1:5173/`, and Electron loads that URL during development.
+The React renderer runs on `http://127.0.0.1:5173/`, and Tauri loads that URL during development.
 
-Pods refresh automatically every 5 seconds while auto refresh is enabled. The refresh still uses `kubectl get pods -o json` through the Electron main process.
+Pods refresh automatically every 5 seconds while auto refresh is enabled. The refresh uses `kubectl get pods -o json` through Tauri commands.
 
 ## Build
 
@@ -25,4 +26,4 @@ Pods refresh automatically every 5 seconds while auto refresh is enabled. The re
 bun run build
 ```
 
-The Electron main process calls `kubectl` directly and exposes a small read-only API to the renderer through `electron/preload.cjs`.
+The Tauri Rust backend calls `kubectl` directly and exposes commands/events to the renderer.

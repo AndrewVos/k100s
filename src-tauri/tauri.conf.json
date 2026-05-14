@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "k100s",
+  "version": "0.1.0",
+  "identifier": "com.k100s.app",
+  "build": {
+    "beforeDevCommand": "bun run dev:vite",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": "bun run build:web",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "k100s",
+        "width": 1180,
+        "height": 780,
+        "minWidth": 860,
+        "minHeight": 580
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": ["icons/icon.png"]
+  }
+}
