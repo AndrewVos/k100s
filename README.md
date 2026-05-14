@@ -27,3 +27,20 @@ bun run build
 ```
 
 The Tauri Rust backend calls `kubectl` directly and exposes commands/events to the renderer.
+
+## Homebrew
+
+After a GitHub release has been published, install with:
+
+```sh
+brew tap AndrewVos/tap
+brew install --cask k100s
+```
+
+Releases are created from `main` with:
+
+```sh
+bun run release:patch
+```
+
+The release workflow builds the macOS DMG, publishes it to GitHub, updates `Casks/k100s.rb`, and syncs the cask to `AndrewVos/homebrew-tap` when `HOMEBREW_TAP_TOKEN` is configured in this repository's GitHub Actions secrets.

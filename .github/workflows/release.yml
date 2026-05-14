@@ -1,0 +1,138 @@
+name: Release desktop app
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: Build macOS release
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Validate tag matches app versions
+        id: version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          PACKAGE_VERSION="$(bun -e 'console.log(require("./package.json").version)')"
+          TAURI_VERSION="$(bun -e 'console.log(require("./src-tauri/tauri.conf.json").version)')"
+          CARGO_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -n 1)"
+
+          if [[ "$VERSION" != "$PACKAGE_VERSION" ]]; then
+            echo "Tag version $VERSION does not match package.json version $PACKAGE_VERSION" >&2
+            exit 1
+          fi
+
+          if [[ "$VERSION" != "$TAURI_VERSION" ]]; then
+            echo "Tag version $VERSION does not match tauri.conf.json version $TAURI_VERSION" >&2
+            exit 1
+          fi
+
+          if [[ "$VERSION" != "$CARGO_VERSION" ]]; then
+            echo "Tag version $VERSION does not match Cargo.toml version $CARGO_VERSION" >&2
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build macOS DMG
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: bun run dist:mac
+
+      - name: Locate release artifact
+        id: artifact
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          DMG_COUNT="$(find src-tauri/target/release/bundle/dmg -maxdepth 1 -type f -name "k100s_${VERSION}_*.dmg" | wc -l | tr -d ' ')"
+
+          if [[ "$DMG_COUNT" != "1" ]]; then
+            echo "Expected exactly one Tauri DMG for version $VERSION, found $DMG_COUNT:" >&2
+            find src-tauri/target/release/bundle/dmg -maxdepth 1 -type f -print >&2
+            exit 1
+          fi
+
+          DMG="$(find src-tauri/target/release/bundle/dmg -maxdepth 1 -type f -name "k100s_${VERSION}_*.dmg" | sort | head -n 1)"
+          mkdir -p release
+          RELEASE_DMG="release/k100s-${VERSION}-mac.dmg"
+          cp "$DMG" "$RELEASE_DMG"
+
+          SHA256="$(shasum -a 256 "$RELEASE_DMG" | awk '{print $1}')"
+          echo "dmg=$RELEASE_DMG" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: k100s ${{ steps.version.outputs.version }}
+          files: ${{ steps.artifact.outputs.dmg }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+
+      - name: Update Homebrew cask on main
+        shell: bash
+        run: |
+          git fetch origin main
+          git checkout main
+          bun run cask:update -- "${{ steps.version.outputs.version }}" "${{ steps.artifact.outputs.sha256 }}"
+          bun run cask:check
+
+          if git diff --quiet -- Casks/k100s.rb; then
+            echo "Homebrew cask already up to date."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Casks/k100s.rb
+            git commit -m "Update Homebrew cask for ${{ steps.version.outputs.tag }}"
+            git push origin main
+          fi
+
+      - name: Sync conventional Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        shell: bash
+        run: |
+          if [[ -z "${HOMEBREW_TAP_TOKEN:-}" ]]; then
+            echo "Skipping tap sync. Set HOMEBREW_TAP_TOKEN to update AndrewVos/homebrew-tap."
+            exit 0
+          fi
+
+          TAP_DIR="$(mktemp -d)"
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/AndrewVos/homebrew-tap.git" "$TAP_DIR"
+          mkdir -p "$TAP_DIR/Casks"
+          cp Casks/k100s.rb "$TAP_DIR/Casks/k100s.rb"
+          cd "$TAP_DIR"
+
+          if git diff --quiet -- Casks/k100s.rb; then
+            echo "Conventional Homebrew tap already up to date."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/k100s.rb
+          git commit -m "Update k100s cask for ${{ steps.version.outputs.tag }}"
+          git push origin HEAD:main

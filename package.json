@@ -9,6 +9,13 @@
     "dev:vite": "vite --host 127.0.0.1",
     "build": "tauri build",
     "build:web": "vite build",
+    "dist:mac": "tauri build",
+    "cask:update": "bun scripts/update-homebrew-cask.mjs",
+    "cask:check": "ruby -c Casks/k100s.rb",
+    "release:version": "bun scripts/release-version.mjs",
+    "release:patch": "bun scripts/release-version.mjs patch",
+    "release:minor": "bun scripts/release-version.mjs minor",
+    "release:major": "bun scripts/release-version.mjs major",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
