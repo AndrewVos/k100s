@@ -40,6 +40,7 @@ const fallbackApi = {
   async describeDeployment() {
     return "";
   },
+  async cancelKubectlRequest() {},
   async startPodLogs() {},
   async stopPodLogs() {},
   onPodLogsData() {
@@ -54,11 +55,12 @@ const fallbackApi = {
 };
 const tauriApi = {
   getContexts: () => invoke("get_contexts"),
-  getNamespaces: (context) => invoke("get_namespaces", { context }),
-  getPods: (context, namespace) => invoke("get_pods", { context, namespace }),
+  getNamespaces: (context, requestId) => invoke("get_namespaces", { context, requestId }),
+  getPods: (context, namespace, requestId) => invoke("get_pods", { context, namespace, requestId }),
   describePod: (context, namespace, podName) => invoke("describe_pod", { context, namespace, podName }),
   describeDeployment: (context, namespace, podName) =>
     invoke("describe_deployment_for_pod", { context, namespace, podName }),
+  cancelKubectlRequest: (id) => invoke("cancel_kubectl_request", { id }),
   startPodLogs: (options) => invoke("start_pod_logs", { options }),
   stopPodLogs: (id) => invoke("stop_pod_logs", { id }),
   onPodLogsData: (callback) => {
@@ -855,7 +857,9 @@ export default function App() {
   const [podSort, setPodSort] = useState({ key: "name", direction: "asc" });
   const [podFilter, setPodFilter] = useState("");
   const namespacesRequestRef = useRef(0);
+  const activeNamespaceRequestIdRef = useRef("");
   const podsRequestRef = useRef(0);
+  const activePodsRequestIdRef = useRef("");
   const podsRequestInFlightRef = useRef(0);
 
   const selectedContext = useMemo(
@@ -935,6 +939,15 @@ export default function App() {
     setErrorSource(source);
   }
 
+  function cancelKubectlRequest(id) {
+    if (!id) return;
+    api.cancelKubectlRequest(id).catch(() => {});
+  }
+
+  function requestKey(kind, id) {
+    return `${kind}:${id}`;
+  }
+
   async function loadContexts() {
     clearError();
     setLoading((current) => ({ ...current, contexts: true }));
@@ -960,6 +973,13 @@ export default function App() {
 
     const requestId = namespacesRequestRef.current + 1;
     namespacesRequestRef.current = requestId;
+    const requestKeyValue = requestKey("namespaces", requestId);
+    cancelKubectlRequest(activeNamespaceRequestIdRef.current);
+    cancelKubectlRequest(activePodsRequestIdRef.current);
+    activeNamespaceRequestIdRef.current = requestKeyValue;
+    activePodsRequestIdRef.current = "";
+    podsRequestRef.current += 1;
+    podsRequestInFlightRef.current = 0;
     clearError();
     setPods([]);
     setNamespaces([]);
@@ -968,7 +988,7 @@ export default function App() {
     setLoading((current) => ({ ...current, namespaces: true }));
 
     try {
-      const result = await api.getNamespaces(nextContext);
+      const result = await api.getNamespaces(nextContext, requestKeyValue);
       if (requestId !== namespacesRequestRef.current) return;
 
       const storedNamespace = window.localStorage.getItem(namespaceStorageKey(nextContext));
@@ -990,6 +1010,9 @@ export default function App() {
 
       showError(cause.message || "Unable to read namespaces.", "namespaces");
     } finally {
+      if (activeNamespaceRequestIdRef.current === requestKeyValue) {
+        activeNamespaceRequestIdRef.current = "";
+      }
       if (requestId === namespacesRequestRef.current) {
         setLoading((current) => ({ ...current, namespaces: false }));
       }
@@ -1004,6 +1027,9 @@ export default function App() {
 
     const requestId = podsRequestRef.current + 1;
     podsRequestRef.current = requestId;
+    const requestKeyValue = requestKey("pods", requestId);
+    cancelKubectlRequest(activePodsRequestIdRef.current);
+    activePodsRequestIdRef.current = requestKeyValue;
     podsRequestInFlightRef.current = requestId;
 
     clearError();
@@ -1012,7 +1038,7 @@ export default function App() {
     }
 
     try {
-      const result = await api.getPods(nextContext, nextNamespace);
+      const result = await api.getPods(nextContext, nextNamespace, requestKeyValue);
       if (requestId !== podsRequestRef.current) return;
 
       setPods(result);
@@ -1023,6 +1049,9 @@ export default function App() {
       showError(cause.message || "Unable to read pods.", "pods");
       setPods([]);
     } finally {
+      if (activePodsRequestIdRef.current === requestKeyValue) {
+        activePodsRequestIdRef.current = "";
+      }
       if (podsRequestInFlightRef.current === requestId) {
         podsRequestInFlightRef.current = 0;
       }

@@ -15,6 +15,7 @@ const KUBECTL_REQUEST_TIMEOUT: &str = "--request-timeout=8s";
 
 #[derive(Clone, Default)]
 struct AppState {
+    kubectl_requests: Arc<Mutex<HashMap<String, Arc<Mutex<Child>>>>>,
     pod_log_streams: Arc<Mutex<HashMap<String, Arc<Mutex<Child>>>>>,
 }
 
@@ -84,7 +85,18 @@ fn read_pipe<R: Read + Send + 'static>(mut pipe: R) -> thread::JoinHandle<Vec<u8
     })
 }
 
-fn run_kubectl_blocking(args: Vec<String>, timeout: Duration) -> Result<String, String> {
+fn cancel_tracked_child(requests: &Arc<Mutex<HashMap<String, Arc<Mutex<Child>>>>>, id: &str) {
+    let child = requests.lock().unwrap().remove(id);
+    if let Some(child) = child {
+        let _ = child.lock().unwrap().kill();
+    }
+}
+
+fn run_kubectl_blocking(
+    args: Vec<String>,
+    timeout: Duration,
+    tracked_request: Option<(Arc<Mutex<HashMap<String, Arc<Mutex<Child>>>>>, String)>,
+) -> Result<String, String> {
     let mut child = Command::new("kubectl")
         .args(&args)
         .stdout(Stdio::piped())
@@ -94,26 +106,40 @@ fn run_kubectl_blocking(args: Vec<String>, timeout: Duration) -> Result<String, 
 
     let stdout = child.stdout.take().map(read_pipe);
     let stderr = child.stderr.take().map(read_pipe);
+    let child = Arc::new(Mutex::new(child));
+
+    if let Some((requests, id)) = &tracked_request {
+        cancel_tracked_child(requests, id);
+        requests.lock().unwrap().insert(id.clone(), child.clone());
+    }
+
     let deadline = Instant::now() + timeout;
     let timed_out;
     let status = loop {
-        match child.try_wait() {
+        let status = child.lock().unwrap().try_wait();
+
+        match status {
             Ok(Some(status)) => {
                 timed_out = false;
                 break status;
             }
             Ok(None) if Instant::now() >= deadline => {
                 timed_out = true;
+                let mut child = child.lock().unwrap();
                 let _ = child.kill();
                 break child.wait().map_err(|cause| cause.to_string())?;
             }
             Ok(None) => thread::sleep(Duration::from_millis(50)),
             Err(cause) => {
-                let _ = child.kill();
+                let _ = child.lock().unwrap().kill();
                 return Err(cause.to_string());
             }
         }
     };
+
+    if let Some((requests, id)) = &tracked_request {
+        requests.lock().unwrap().remove(id);
+    }
 
     let stdout = stdout
         .map(|handle| handle.join().unwrap_or_default())
@@ -149,7 +175,23 @@ fn run_kubectl_blocking(args: Vec<String>, timeout: Duration) -> Result<String, 
 
 async fn run_kubectl(args: Vec<String>) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        run_kubectl_blocking(args, KUBECTL_COMMAND_TIMEOUT)
+        run_kubectl_blocking(args, KUBECTL_COMMAND_TIMEOUT, None)
+    })
+    .await
+    .map_err(|cause| cause.to_string())?
+}
+
+async fn run_tracked_kubectl(
+    state: AppState,
+    request_id: String,
+    args: Vec<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_kubectl_blocking(
+            args,
+            KUBECTL_COMMAND_TIMEOUT,
+            Some((state.kubectl_requests.clone(), request_id)),
+        )
     })
     .await
     .map_err(|cause| cause.to_string())?
@@ -214,16 +256,24 @@ async fn get_contexts() -> Result<ContextsResult, String> {
 }
 
 #[tauri::command]
-async fn get_namespaces(context: String) -> Result<Vec<String>, String> {
-    let output = run_kubectl(vec![
-        "--context".into(),
-        context,
-        KUBECTL_REQUEST_TIMEOUT.into(),
-        "get".into(),
-        "namespaces".into(),
-        "-o".into(),
-        "json".into(),
-    ])
+async fn get_namespaces(
+    state: State<'_, AppState>,
+    context: String,
+    request_id: String,
+) -> Result<Vec<String>, String> {
+    let output = run_tracked_kubectl(
+        state.inner().clone(),
+        request_id,
+        vec![
+            "--context".into(),
+            context,
+            KUBECTL_REQUEST_TIMEOUT.into(),
+            "get".into(),
+            "namespaces".into(),
+            "-o".into(),
+            "json".into(),
+        ],
+    )
     .await?;
     let payload: Value = serde_json::from_str(&output).map_err(|cause| cause.to_string())?;
     let mut namespaces = payload
@@ -319,18 +369,27 @@ fn summarize_pod(pod: &Value) -> Option<PodSummary> {
 }
 
 #[tauri::command]
-async fn get_pods(context: String, namespace: String) -> Result<Vec<PodSummary>, String> {
-    let output = run_kubectl(vec![
-        "--context".into(),
-        context,
-        "-n".into(),
-        namespace,
-        KUBECTL_REQUEST_TIMEOUT.into(),
-        "get".into(),
-        "pods".into(),
-        "-o".into(),
-        "json".into(),
-    ])
+async fn get_pods(
+    state: State<'_, AppState>,
+    context: String,
+    namespace: String,
+    request_id: String,
+) -> Result<Vec<PodSummary>, String> {
+    let output = run_tracked_kubectl(
+        state.inner().clone(),
+        request_id,
+        vec![
+            "--context".into(),
+            context,
+            "-n".into(),
+            namespace,
+            KUBECTL_REQUEST_TIMEOUT.into(),
+            "get".into(),
+            "pods".into(),
+            "-o".into(),
+            "json".into(),
+        ],
+    )
     .await?;
     let payload: Value = serde_json::from_str(&output).map_err(|cause| cause.to_string())?;
     let mut pods = payload
@@ -439,6 +498,12 @@ fn stop_pod_logs_by_id(state: &AppState, id: &str) {
     if let Some(child) = child {
         let _ = child.lock().unwrap().kill();
     }
+}
+
+#[tauri::command]
+fn cancel_kubectl_request(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    cancel_tracked_child(&state.kubectl_requests, &id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -585,6 +650,7 @@ pub fn run() {
             get_pods,
             describe_pod,
             describe_deployment_for_pod,
+            cancel_kubectl_request,
             start_pod_logs,
             stop_pod_logs
         ])
