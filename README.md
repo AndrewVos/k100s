@@ -2,6 +2,18 @@
 
 A small Tauri desktop app for browsing Kubernetes contexts, namespaces, pods, logs, and pod descriptions.
 
+## Screenshots
+
+![Pods list](screenshots/main-window.png)
+
+![Pod logs](screenshots/logs.png)
+
+![Pod shell](screenshots/shell.png)
+
+![Deployment describe](screenshots/deployment.png)
+
+![Pod errors](screenshots/errors.png)
+
 ## Install
 
 ```sh
@@ -39,6 +51,35 @@ bun run build
 ```
 
 The Tauri Rust backend calls `kubectl` directly and exposes commands/events to the renderer.
+
+## Screenshot Demo Cluster
+
+Create a local Kubernetes cluster with sample namespaces, healthy workloads, streaming logs, and a few intentionally unhealthy pods:
+
+```sh
+bun run demo:cluster
+```
+
+This requires Docker, `kind`, and `kubectl`.
+
+The script writes its kubeconfig to `~/.kube/k100s-demo.kubeconfig` so it can work even if your normal kubeconfig has unrelated YAML issues. Launch k100s with that kubeconfig:
+
+```sh
+KUBECONFIG="$HOME/.kube/k100s-demo.kubeconfig" bun run dev
+```
+
+Then select the `kind-k100s-demo` cluster. The script creates:
+
+- `k100s-demo` with frontend, API, and worker pods
+- `k100s-observability` with log-stream and cache pods
+- `k100s-failures` with CrashLoopBackOff, ImagePullBackOff, and Pending examples
+
+Reset or remove the cluster with:
+
+```sh
+bun run demo:cluster:reset
+bun run demo:cluster:down
+```
 
 Releases are created from `main` with:
 

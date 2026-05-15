@@ -16,6 +16,10 @@
     "release:patch": "bun scripts/release-version.mjs patch",
     "release:minor": "bun scripts/release-version.mjs minor",
     "release:major": "bun scripts/release-version.mjs major",
+    "demo:cluster": "scripts/demo-cluster.sh up",
+    "demo:cluster:down": "scripts/demo-cluster.sh down",
+    "demo:cluster:reset": "scripts/demo-cluster.sh reset",
+    "demo:cluster:status": "scripts/demo-cluster.sh status",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
