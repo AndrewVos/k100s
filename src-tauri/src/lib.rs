@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::HashMap,
+    env,
+    ffi::OsString,
     io::{BufRead, BufReader, Read, Write},
+    path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
@@ -137,13 +140,77 @@ fn cancel_tracked_child(requests: &Arc<Mutex<HashMap<String, Arc<Mutex<Child>>>>
     }
 }
 
+fn kubectl_search_paths() -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = env::var_os("PATH")
+        .map(|path| env::split_paths(&path).collect())
+        .unwrap_or_default();
+
+    paths.extend(
+        [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/opt/local/bin",
+            "/usr/bin",
+            "/bin",
+        ]
+        .into_iter()
+        .map(PathBuf::from),
+    );
+
+    if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
+        paths.extend(
+            [
+                home.join(".asdf/shims"),
+                home.join(".local/bin"),
+                home.join(".krew/bin"),
+                home.join("bin"),
+            ]
+            .into_iter(),
+        );
+    }
+
+    let mut unique_paths = Vec::new();
+    for path in paths {
+        if !unique_paths.contains(&path) {
+            unique_paths.push(path);
+        }
+    }
+
+    unique_paths
+}
+
+fn kubectl_path_env() -> OsString {
+    env::join_paths(kubectl_search_paths()).unwrap_or_else(|_| OsString::from(""))
+}
+
+fn kubectl_program() -> Result<PathBuf, String> {
+    let checked_paths = kubectl_search_paths();
+
+    for path in &checked_paths {
+        let candidate = path.join("kubectl");
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(format!(
+        "Unable to find kubectl. macOS apps launched from Finder or Homebrew do not inherit your shell PATH. Checked: {}",
+        checked_paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
 fn run_kubectl_blocking(
     args: Vec<String>,
     timeout: Duration,
     tracked_request: Option<(Arc<Mutex<HashMap<String, Arc<Mutex<Child>>>>>, String)>,
 ) -> Result<String, String> {
-    let mut child = Command::new("kubectl")
+    let mut child = Command::new(kubectl_program()?)
         .args(&args)
+        .env("PATH", kubectl_path_env())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -560,7 +627,7 @@ fn start_pod_logs(
     let app_state = state.inner().clone();
     stop_pod_logs_by_id(&app_state, &options.id);
 
-    let mut child = Command::new("kubectl")
+    let mut child = Command::new(kubectl_program()?)
         .args([
             "--context",
             &options.context,
@@ -573,6 +640,7 @@ fn start_pod_logs(
             "--timestamps",
             "--all-containers=true",
         ])
+        .env("PATH", kubectl_path_env())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -720,7 +788,8 @@ fn start_pod_shell(
         .map_err(|cause| cause.to_string())?;
     let writer = master.take_writer().map_err(|cause| cause.to_string())?;
 
-    let mut command = CommandBuilder::new("kubectl");
+    let mut command = CommandBuilder::new(kubectl_program()?);
+    command.env("PATH", kubectl_path_env());
     command.args([
         "--context",
         &options.context,
