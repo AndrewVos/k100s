@@ -620,6 +620,27 @@ struct PodLogSelection {
     dropped: Vec<String>,
 }
 
+#[derive(Clone)]
+struct PodLogContainer {
+    name: String,
+    started_at: Option<String>,
+    index: usize,
+}
+
+fn pod_log_container_status_started_at(statuses: &[Value], name: &str) -> Option<String> {
+    statuses
+        .iter()
+        .find(|status| status.get("name").and_then(Value::as_str) == Some(name))
+        .and_then(|status| {
+            status
+                .pointer("/state/running/startedAt")
+                .or_else(|| status.pointer("/state/terminated/startedAt"))
+                .or_else(|| status.pointer("/lastState/terminated/startedAt"))
+        })
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+}
+
 fn select_pod_log_containers(
     context: &str,
     namespace: &str,
@@ -642,28 +663,58 @@ fn select_pod_log_containers(
         None,
     )?;
     let pod: Value = serde_json::from_str(&output).map_err(|cause| cause.to_string())?;
+    let statuses = pod
+        .pointer("/status/containerStatuses")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
 
-    let containers = pod
+    let mut containers = pod
         .pointer("/spec/containers")
         .and_then(Value::as_array)
         .map(|items| {
             items
                 .iter()
-                .filter_map(|container| container.get("name").and_then(Value::as_str))
-                .map(ToString::to_string)
+                .enumerate()
+                .filter_map(|(index, container)| {
+                    let name = container.get("name").and_then(Value::as_str)?;
+                    Some(PodLogContainer {
+                        name: name.to_string(),
+                        started_at: pod_log_container_status_started_at(statuses, name),
+                        index,
+                    })
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
 
     if containers.len() <= MAX_KUBECTL_LOG_STREAMS {
         return Ok(PodLogSelection {
-            selected: containers,
+            selected: containers
+                .into_iter()
+                .map(|container| container.name)
+                .collect(),
             dropped: Vec::new(),
         });
     }
 
-    let selected = containers[..MAX_KUBECTL_LOG_STREAMS].to_vec();
-    let dropped = containers[MAX_KUBECTL_LOG_STREAMS..].to_vec();
+    containers.sort_by(|left, right| {
+        right
+            .started_at
+            .cmp(&left.started_at)
+            .then_with(|| left.index.cmp(&right.index))
+    });
+
+    let dropped = containers
+        .iter()
+        .skip(MAX_KUBECTL_LOG_STREAMS)
+        .map(|container| container.name.clone())
+        .collect();
+    let selected = containers
+        .into_iter()
+        .take(MAX_KUBECTL_LOG_STREAMS)
+        .map(|container| container.name)
+        .collect();
 
     Ok(PodLogSelection { selected, dropped })
 }
@@ -774,7 +825,7 @@ fn start_pod_logs(
             LogDataPayload {
                 id: options.id.clone(),
                 text: format!(
-                    "k100s: following the first {} container log streams; dropped: {}\n",
+                    "k100s: following the newest {} container log streams; dropped oldest: {}\n",
                     selection.selected.len(),
                     selection.dropped.join(", ")
                 ),
