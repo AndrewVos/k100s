@@ -1,3 +1,4 @@
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -11,19 +12,19 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use portable_pty::{
-    native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize,
-};
 use tauri::{AppHandle, Emitter, State};
 
 const KUBECTL_COMMAND_TIMEOUT: Duration = Duration::from_secs(12);
 const KUBECTL_REQUEST_TIMEOUT: &str = "--request-timeout=8s";
+const MAX_KUBECTL_LOG_STREAMS: usize = 5;
 const APP_ICON_PNG: &[u8] = include_bytes!("../icons/icon.png");
+
+type SharedChild = Arc<Mutex<Child>>;
 
 #[derive(Clone, Default)]
 struct AppState {
-    kubectl_requests: Arc<Mutex<HashMap<String, Arc<Mutex<Child>>>>>,
-    pod_log_streams: Arc<Mutex<HashMap<String, Arc<Mutex<Child>>>>>,
+    kubectl_requests: Arc<Mutex<HashMap<String, SharedChild>>>,
+    pod_log_streams: Arc<Mutex<HashMap<String, Vec<SharedChild>>>>,
     pod_shells: Arc<Mutex<HashMap<String, PodShellSession>>>,
 }
 
@@ -606,10 +607,112 @@ async fn describe_deployment_for_pod(
 }
 
 fn stop_pod_logs_by_id(state: &AppState, id: &str) {
-    let child = state.pod_log_streams.lock().unwrap().remove(id);
-    if let Some(child) = child {
-        let _ = child.lock().unwrap().kill();
+    let children = state.pod_log_streams.lock().unwrap().remove(id);
+    if let Some(children) = children {
+        for child in children {
+            let _ = child.lock().unwrap().kill();
+        }
     }
+}
+
+struct PodLogSelection {
+    selected: Vec<String>,
+    dropped: Vec<String>,
+}
+
+fn select_pod_log_containers(
+    context: &str,
+    namespace: &str,
+    pod_name: &str,
+) -> Result<PodLogSelection, String> {
+    let output = run_kubectl_blocking(
+        vec![
+            "--context".into(),
+            context.into(),
+            "-n".into(),
+            namespace.into(),
+            KUBECTL_REQUEST_TIMEOUT.into(),
+            "get".into(),
+            "pod".into(),
+            pod_name.into(),
+            "-o".into(),
+            "json".into(),
+        ],
+        KUBECTL_COMMAND_TIMEOUT,
+        None,
+    )?;
+    let pod: Value = serde_json::from_str(&output).map_err(|cause| cause.to_string())?;
+
+    let containers = pod
+        .pointer("/spec/containers")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|container| container.get("name").and_then(Value::as_str))
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if containers.len() <= MAX_KUBECTL_LOG_STREAMS {
+        return Ok(PodLogSelection {
+            selected: containers,
+            dropped: Vec::new(),
+        });
+    }
+
+    let selected = containers[..MAX_KUBECTL_LOG_STREAMS].to_vec();
+    let dropped = containers[MAX_KUBECTL_LOG_STREAMS..].to_vec();
+
+    Ok(PodLogSelection { selected, dropped })
+}
+
+fn build_pod_logs_args(options: &StartPodLogsOptions, container: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "--context".into(),
+        options.context.clone(),
+        "-n".into(),
+        options.namespace.clone(),
+        "logs".into(),
+        options.pod_name.clone(),
+        "--follow".into(),
+        "--tail=200".into(),
+        "--timestamps".into(),
+    ];
+
+    if let Some(container) = container {
+        args.push("--container".into());
+        args.push(container.to_string());
+    } else {
+        args.push("--all-containers=true".into());
+    }
+
+    args
+}
+
+fn spawn_pod_logs_child(
+    options: &StartPodLogsOptions,
+    container: Option<&str>,
+) -> Result<
+    (
+        SharedChild,
+        Option<std::process::ChildStdout>,
+        Option<std::process::ChildStderr>,
+    ),
+    String,
+> {
+    let mut child = Command::new(kubectl_program()?)
+        .args(build_pod_logs_args(options, container))
+        .env("PATH", kubectl_path_env())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|cause| cause.to_string())?;
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    Ok((Arc::new(Mutex::new(child)), stdout, stderr))
 }
 
 #[tauri::command]
@@ -627,36 +730,59 @@ fn start_pod_logs(
     let app_state = state.inner().clone();
     stop_pod_logs_by_id(&app_state, &options.id);
 
-    let mut child = Command::new(kubectl_program()?)
-        .args([
-            "--context",
-            &options.context,
-            "-n",
-            &options.namespace,
-            "logs",
-            &options.pod_name,
-            "--follow",
-            "--tail=200",
-            "--timestamps",
-            "--all-containers=true",
-        ])
-        .env("PATH", kubectl_path_env())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|cause| cause.to_string())?;
+    let selection =
+        select_pod_log_containers(&options.context, &options.namespace, &options.pod_name)?;
+    let containers = if selection.dropped.is_empty() {
+        vec![None]
+    } else {
+        selection
+            .selected
+            .iter()
+            .map(|container| Some(container.as_str()))
+            .collect::<Vec<_>>()
+    };
 
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let child = Arc::new(Mutex::new(child));
+    let mut children = Vec::new();
+    let mut stdouts = Vec::new();
+    let mut stderrs = Vec::new();
+
+    for container in containers {
+        match spawn_pod_logs_child(&options, container) {
+            Ok((child, stdout, stderr)) => {
+                children.push(child);
+                stdouts.push(stdout);
+                stderrs.push(stderr);
+            }
+            Err(cause) => {
+                for child in children {
+                    let _ = child.lock().unwrap().kill();
+                }
+                return Err(cause);
+            }
+        }
+    }
 
     app_state
         .pod_log_streams
         .lock()
         .unwrap()
-        .insert(options.id.clone(), child.clone());
+        .insert(options.id.clone(), children.clone());
 
-    if let Some(stdout) = stdout {
+    if !selection.dropped.is_empty() {
+        let _ = app.emit(
+            "kubectl:pod-logs-data",
+            LogDataPayload {
+                id: options.id.clone(),
+                text: format!(
+                    "k100s: following the first {} container log streams; dropped: {}\n",
+                    selection.selected.len(),
+                    selection.dropped.join(", ")
+                ),
+            },
+        );
+    }
+
+    for stdout in stdouts.into_iter().flatten() {
         let app = app.clone();
         let id = options.id.clone();
         thread::spawn(move || {
@@ -691,7 +817,7 @@ fn start_pod_logs(
         });
     }
 
-    if let Some(stderr) = stderr {
+    for stderr in stderrs.into_iter().flatten() {
         let app = app.clone();
         let id = options.id.clone();
         thread::spawn(move || {
@@ -712,36 +838,61 @@ fn start_pod_logs(
     let app = app.clone();
     let wait_state = app_state.clone();
     let id = options.id.clone();
+    let wait_children = children.clone();
     thread::spawn(move || loop {
-        let status = child.lock().unwrap().try_wait();
+        let mut all_closed = true;
+        let mut last_code = None;
 
-        match status {
-            Ok(Some(status)) => {
-                let code = status.code();
-                wait_state.pod_log_streams.lock().unwrap().remove(&id);
+        for child in &wait_children {
+            match child.lock().unwrap().try_wait() {
+                Ok(Some(status)) => {
+                    last_code = status.code();
+                }
+                Ok(None) => {
+                    all_closed = false;
+                }
+                Err(cause) => {
+                    let was_active = wait_state
+                        .pod_log_streams
+                        .lock()
+                        .unwrap()
+                        .remove(&id)
+                        .is_some();
+                    if was_active {
+                        let _ = app.emit(
+                            "kubectl:pod-logs-error",
+                            LogErrorPayload {
+                                id: id.clone(),
+                                message: cause.to_string(),
+                            },
+                        );
+                    }
+                    break;
+                }
+            }
+        }
+
+        if all_closed {
+            let was_active = wait_state
+                .pod_log_streams
+                .lock()
+                .unwrap()
+                .remove(&id)
+                .is_some();
+            if was_active {
                 let _ = app.emit(
                     "kubectl:pod-logs-closed",
                     LogClosedPayload {
                         id: id.clone(),
-                        code,
+                        code: last_code,
                         signal: None,
                     },
                 );
-                break;
             }
-            Ok(None) => thread::sleep(Duration::from_millis(250)),
-            Err(cause) => {
-                wait_state.pod_log_streams.lock().unwrap().remove(&id);
-                let _ = app.emit(
-                    "kubectl:pod-logs-error",
-                    LogErrorPayload {
-                        id: id.clone(),
-                        message: cause.to_string(),
-                    },
-                );
-                break;
-            }
+            break;
         }
+
+        thread::sleep(Duration::from_millis(250));
     });
 
     Ok(())
