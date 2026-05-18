@@ -1,6 +1,6 @@
 [package]
 name = "k100s"
-version = "0.1.4"
+version = "0.1.5"
 description = "A Kubernetes desktop browser for clusters, namespaces, and pods."
 authors = ["k100s"]
 edition = "2021"
