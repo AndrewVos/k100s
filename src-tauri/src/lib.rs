@@ -641,6 +641,37 @@ fn pod_log_container_status_started_at(statuses: &[Value], name: &str) -> Option
         .map(ToString::to_string)
 }
 
+fn collect_pod_log_containers(
+    pod: &Value,
+    spec_path: &str,
+    status_path: &str,
+    index_offset: usize,
+) -> Vec<PodLogContainer> {
+    let statuses = pod
+        .pointer(status_path)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+
+    pod.pointer(spec_path)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .enumerate()
+                .filter_map(|(index, container)| {
+                    let name = container.get("name").and_then(Value::as_str)?;
+                    Some(PodLogContainer {
+                        name: name.to_string(),
+                        started_at: pod_log_container_status_started_at(statuses, name),
+                        index: index_offset + index,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
 fn select_pod_log_containers(
     context: &str,
     namespace: &str,
@@ -663,30 +694,27 @@ fn select_pod_log_containers(
         None,
     )?;
     let pod: Value = serde_json::from_str(&output).map_err(|cause| cause.to_string())?;
-    let statuses = pod
-        .pointer("/status/containerStatuses")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
 
-    let mut containers = pod
-        .pointer("/spec/containers")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .enumerate()
-                .filter_map(|(index, container)| {
-                    let name = container.get("name").and_then(Value::as_str)?;
-                    Some(PodLogContainer {
-                        name: name.to_string(),
-                        started_at: pod_log_container_status_started_at(statuses, name),
-                        index,
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let mut containers = collect_pod_log_containers(
+        &pod,
+        "/spec/initContainers",
+        "/status/initContainerStatuses",
+        0,
+    );
+    let app_container_offset = containers.len();
+    containers.extend(collect_pod_log_containers(
+        &pod,
+        "/spec/containers",
+        "/status/containerStatuses",
+        app_container_offset,
+    ));
+    let ephemeral_container_offset = containers.len();
+    containers.extend(collect_pod_log_containers(
+        &pod,
+        "/spec/ephemeralContainers",
+        "/status/ephemeralContainerStatuses",
+        ephemeral_container_offset,
+    ));
 
     if containers.len() <= MAX_KUBECTL_LOG_STREAMS {
         return Ok(PodLogSelection {
@@ -783,7 +811,7 @@ fn start_pod_logs(
 
     let selection =
         select_pod_log_containers(&options.context, &options.namespace, &options.pod_name)?;
-    let containers = if selection.dropped.is_empty() {
+    let containers = if selection.selected.is_empty() {
         vec![None]
     } else {
         selection
